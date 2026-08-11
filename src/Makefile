@@ -5,9 +5,15 @@ CUDA_LIB = -L$(CUDA_DIR)/lib64/
 
 DEBUG = 0
 
-# compiler settings for .c files (CPU)
-CC ?= gcc
-CXX ?= g++
+# compiler settings for host code. GNU make predefines CC=cc and CXX=g++, so
+# using ?= here does not actually select a CUDA-supported compiler. Prefer GCC
+# 15 when it is installed, while still allowing `make CC=... CXX=...` overrides.
+ifeq ($(origin CC), default)
+  CC := $(shell command -v gcc-15 2>/dev/null || command -v gcc)
+endif
+ifeq ($(origin CXX), default)
+  CXX := $(shell command -v g++-15 2>/dev/null || command -v g++)
+endif
 CFLAGS = -Wall -Wextra $(CUDA_INCLUDE)
 
 ifeq ($(DEBUG), 1)
@@ -19,7 +25,9 @@ endif
 
 # compiler settings for .cu files (GPU)
 NVCC = nvcc
-NVCCFLAGS = $(CUDA_INCLUDE) --ptxas-options=-v -Wno-deprecated-gpu-targets
+# nvcc otherwise searches PATH for its own host compiler, independently of CC
+# and CXX. Explicitly use the same supported C++ compiler selected above.
+NVCCFLAGS = $(CUDA_INCLUDE) -ccbin $(CXX) --ptxas-options=-v -Wno-deprecated-gpu-targets
 
 # generate code for compute capabilities - see this table for supported
 # versions: https://en.wikipedia.org/wiki/CUDA#GPUs_supported
