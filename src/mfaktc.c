@@ -348,6 +348,7 @@ int tf(mystuff_t *mystuff, int class_hint, unsigned long long int k_hint, int ke
                     logprintf(mystuff, "ERROR: Unknown kernel selected (%d)!\n", kernel);
                     return RET_CUDA_ERROR;
                 }
+                if (numfactors == RET_CUDA_ERROR) return RET_CUDA_ERROR;
                 cudaError = cudaGetLastError();
                 if (cudaError != cudaSuccess) {
                     logprintf(mystuff, "ERROR: cudaGetLastError() returned %d: %s\n", cudaError, cudaGetErrorString(cudaError));
@@ -925,6 +926,9 @@ int main(int argc, char **argv)
     mystuff.compcapa_minor = deviceinfo.minor;
 
     mystuff.max_shared_memory = (int)deviceinfo.sharedMemPerMultiprocessor;
+    if (cudaDeviceGetAttribute(&mystuff.max_shared_memory_per_block, cudaDevAttrMaxSharedMemoryPerBlockOptin, devicenumber) != cudaSuccess ||
+        mystuff.max_shared_memory_per_block == 0)
+        mystuff.max_shared_memory_per_block = (int)deviceinfo.sharedMemPerBlock;
 
     if (mystuff.verbosity >= 1) {
         logprintf(&mystuff, "\nCUDA device info\n");
@@ -932,6 +936,7 @@ int main(int argc, char **argv)
         logprintf(&mystuff, "  compute capability        %d.%d\n", deviceinfo.major, deviceinfo.minor);
         logprintf(&mystuff, "  max threads per block     %d\n", deviceinfo.maxThreadsPerBlock);
         logprintf(&mystuff, "  max shared memory per MP  %d bytes\n", mystuff.max_shared_memory);
+        logprintf(&mystuff, "  max shared memory/block   %d bytes\n", mystuff.max_shared_memory_per_block);
         logprintf(&mystuff, "  number of multiprocessors %d\n", deviceinfo.multiProcessorCount);
 
         /* map deviceinfo.major + deviceinfo.minor to number of CUDA cores per MP.

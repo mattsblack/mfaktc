@@ -60,10 +60,15 @@ https://github.com/primesearch/mfakto
 #################
 
 General requirements:
-- CUDA Toolkit
+- CUDA Toolkit 13.2.1 for the supplied makefile target list
   - see https://developer.nvidia.com/cuda-toolkit for download and installation
     instructions
 - C compiler
+
+The supplied Linux and Windows makefiles generate native cubins for compute
+capabilities 7.5 through 12.1 and include compute_75 PTX as a forward-compatible
+fallback. Older toolkits require trimming the architecture list to the targets
+they recognize.
 
 Some compile-time settings in the file src/params.h can be changed:
 - in the first section are settings which "advanced users" can change if they

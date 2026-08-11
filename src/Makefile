@@ -44,9 +44,19 @@ NVCCFLAGS += --generate-code arch=compute_75,code=sm_75 # Turing GPUs; slightly 
 NVCCFLAGS += --generate-code arch=compute_80,code=sm_80 # Ampere GPUs
 NVCCFLAGS += --generate-code arch=compute_86,code=sm_86
 NVCCFLAGS += --generate-code arch=compute_87,code=sm_87
+NVCCFLAGS += --generate-code arch=compute_88,code=sm_88
 NVCCFLAGS += --generate-code arch=compute_89,code=sm_89 # Ada Lovelace GPUs
 NVCCFLAGS += --generate-code arch=compute_90,code=sm_90 # Hopper GPUs
-NVCCFLAGS += --generate-code arch=compute_120,code=sm_120 # Blackwell GPUs
+NVCCFLAGS += --generate-code arch=compute_100,code=sm_100 # Blackwell data-center GPUs
+NVCCFLAGS += --generate-code arch=compute_103,code=sm_103
+NVCCFLAGS += --generate-code arch=compute_110,code=sm_110
+NVCCFLAGS += --generate-code arch=compute_120,code=sm_120 # Blackwell consumer GPUs
+NVCCFLAGS += --generate-code arch=compute_121,code=sm_121
+
+# Keep forward-compatible PTX in the fat binary for CUDA-capable devices that
+# do not have an exact cubin above.  CUDA 13.2.1 supports JIT-compiling this
+# baseline PTX for every architecture supported by mfaktc.
+NVCCFLAGS += --generate-code arch=compute_75,code=compute_75
 
 # pass some options to the C host compiler
 ifeq ($(DEBUG), 1)

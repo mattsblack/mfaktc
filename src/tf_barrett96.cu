@@ -67,10 +67,12 @@ RES               integer array where the results (FCs which actually divide M(e
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett92(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES, int bit_max64)
+    mfaktc_barrett92(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES, int bit_max64)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett92(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES, int bit_max64,
+    mfaktc_barrett92(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES, int bit_max64,
                      unsigned int *modbasecase_debug)
 #endif
 {
@@ -90,10 +92,12 @@ __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett88(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES, int bit_max64)
+    mfaktc_barrett88(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES, int bit_max64)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett88(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES, int bit_max64,
+    mfaktc_barrett88(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES, int bit_max64,
                      unsigned int *modbasecase_debug)
 #endif
 {
@@ -113,10 +117,12 @@ __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett87(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES, int bit_max64)
+    mfaktc_barrett87(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES, int bit_max64)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett87(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES, int bit_max64,
+    mfaktc_barrett87(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES, int bit_max64,
                      unsigned int *modbasecase_debug)
 #endif
 {
@@ -136,10 +142,12 @@ __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett79(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES)
+    mfaktc_barrett79(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett79(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES, int bit_max64,
+    mfaktc_barrett79(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES, int bit_max64,
                      unsigned int *modbasecase_debug)
 #endif
 {
@@ -159,10 +167,12 @@ __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett77(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES)
+    mfaktc_barrett77(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett77(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES, int bit_max64,
+    mfaktc_barrett77(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES, int bit_max64,
                      unsigned int *modbasecase_debug)
 #endif
 {
@@ -182,10 +192,12 @@ __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett76(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES)
+    mfaktc_barrett76(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett76(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES, int bit_max64,
+    mfaktc_barrett76(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+                     unsigned int *__restrict__ RES, int bit_max64,
                      unsigned int *modbasecase_debug)
 #endif
 {

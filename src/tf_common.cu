@@ -72,8 +72,23 @@ extern "C" __host__ int tf_class_barrett92(unsigned long long int k_min, unsigne
 
     timer_init(&timer);
 
-    int threadsPerBlock = THREADS_PER_BLOCK;
+    static int cachedThreadsPerBlock = 0;
+    int threadsPerBlock = cachedThreadsPerBlock;
+    int activeBlocks128 = 0, activeBlocks256 = 0;
+    if (threadsPerBlock == 0) {
+        threadsPerBlock = THREADS_PER_BLOCK;
+        if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&activeBlocks128, MFAKTC_FUNC, 128, 0) == cudaSuccess &&
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&activeBlocks256, MFAKTC_FUNC, THREADS_PER_BLOCK, 0) == cudaSuccess &&
+            activeBlocks128 * 128 > activeBlocks256 * THREADS_PER_BLOCK) {
+            threadsPerBlock = 128;
+        }
+        cachedThreadsPerBlock = threadsPerBlock;
+    }
     int blocksPerGrid   = (mystuff->threads_per_grid + threadsPerBlock - 1) / threadsPerBlock;
+
+    if (mystuff->verbosity >= 3 && activeBlocks128 != 0)
+        printf("TF launch: %d threads/block (%d vs %d resident threads/SM)\n", threadsPerBlock, activeBlocks128 * 128,
+               activeBlocks256 * THREADS_PER_BLOCK);
 
     unsigned int delay = 1000;
 
@@ -234,10 +249,17 @@ extern "C" __host__ int tf_class_barrett92(unsigned long long int k_min, unsigne
 
     /* wait to finish the current calculations on the device */
     cuda_ret = cudaDeviceSynchronize();
-    if (cuda_ret != cudaSuccess) printf("per class final cudaDeviceSynchronize failed!\n");
+    if (cuda_ret != cudaSuccess) {
+        printf("ERROR: trial factoring synchronization failed: %s\n", cudaGetErrorString(cuda_ret));
+        return RET_CUDA_ERROR;
+    }
 
     /* download results from GPU */
-    cudaMemcpy(mystuff->h_RES, mystuff->d_RES, 32 * sizeof(int), cudaMemcpyDeviceToHost);
+    cuda_ret = cudaMemcpy(mystuff->h_RES, mystuff->d_RES, 32 * sizeof(int), cudaMemcpyDeviceToHost);
+    if (cuda_ret != cudaSuccess) {
+        printf("ERROR: trial factoring result download failed: %s\n", cudaGetErrorString(cuda_ret));
+        return RET_CUDA_ERROR;
+    }
 
 #ifdef DEBUG_GPU_MATH
     cudaMemcpy(mystuff->h_modbasecase_debug, mystuff->d_modbasecase_debug, 32 * sizeof(int), cudaMemcpyDeviceToHost);

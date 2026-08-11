@@ -50,12 +50,13 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett92_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES, int bit_max64)
+    mfaktc_barrett92_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett92_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES, int bit_max64, unsigned int *modbasecase_debug)
+    mfaktc_barrett92_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64,
+                        unsigned int *modbasecase_debug)
 #endif
 /*
 computes 2^exp mod f
@@ -75,7 +76,7 @@ bit_max64 is the number of bits in the factor (minus 64)
     initial_shifter_value = exp << (32 - shiftcount); // Initial shifter value
 
     // Loop til the k values written to shared memory are exhausted
-    for (i = threadIdx.x; i < total_bit_count; i += THREADS_PER_BLOCK) {
+    for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {
         // Get the (k - k_base) value to test
         k_delta = k_deltas[i];
 
@@ -96,12 +97,13 @@ bit_max64 is the number of bits in the factor (minus 64)
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett88_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES, int bit_max64)
+    mfaktc_barrett88_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett88_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES, int bit_max64, unsigned int *modbasecase_debug)
+    mfaktc_barrett88_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64,
+                        unsigned int *modbasecase_debug)
 #endif
 /*
 computes 2^exp mod f
@@ -121,7 +123,7 @@ bit_max64 is the number of bits in the factor (minus 64)
     initial_shifter_value = exp << (32 - shiftcount); // Initial shifter value
 
     // Loop til the k values written to shared memory are exhausted
-    for (i = threadIdx.x; i < total_bit_count; i += THREADS_PER_BLOCK) {
+    for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {
         // Get the (k - k_base) value to test
         k_delta = k_deltas[i];
 
@@ -142,12 +144,13 @@ bit_max64 is the number of bits in the factor (minus 64)
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett87_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES, int bit_max64)
+    mfaktc_barrett87_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett87_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES, int bit_max64, unsigned int *modbasecase_debug)
+    mfaktc_barrett87_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64,
+                        unsigned int *modbasecase_debug)
 #endif
 /*
 computes 2^exp mod f
@@ -167,7 +170,7 @@ bit_max64 is the number of bits in the factor (minus 64)
     initial_shifter_value = exp << (32 - shiftcount); // Initial shifter value
 
     // Loop til the k values written to shared memory are exhausted
-    for (i = threadIdx.x; i < total_bit_count; i += THREADS_PER_BLOCK) {
+    for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {
         // Get the (k - k_base) value to test
         k_delta = k_deltas[i];
 
@@ -188,12 +191,13 @@ bit_max64 is the number of bits in the factor (minus 64)
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett79_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES)
+    mfaktc_barrett79_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett79_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES, int bit_max64, unsigned int *modbasecase_debug)
+    mfaktc_barrett79_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64,
+                        unsigned int *modbasecase_debug)
 #endif
 /*
 computes 2^exp mod f
@@ -212,7 +216,7 @@ a is precomputed on host ONCE.
     initial_shifter_value = exp << (32 - shiftcount); // Initial shifter value
 
     // Loop til the k values written to shared memory are exhausted
-    for (i = threadIdx.x; i < total_bit_count; i += THREADS_PER_BLOCK) {
+    for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {
         // Get the (k - k_base) value to test
         k_delta = k_deltas[i];
 
@@ -233,12 +237,13 @@ a is precomputed on host ONCE.
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett77_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES)
+    mfaktc_barrett77_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett77_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES, int bit_max64, unsigned int *modbasecase_debug)
+    mfaktc_barrett77_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64,
+                        unsigned int *modbasecase_debug)
 #endif
 /*
 computes 2^exp mod f
@@ -257,7 +262,7 @@ a is precomputed on host ONCE.
     initial_shifter_value = exp << (32 - shiftcount); // Initial shifter value
 
     // Loop til the k values written to shared memory are exhausted
-    for (i = threadIdx.x; i < total_bit_count; i += THREADS_PER_BLOCK) {
+    for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {
         // Get the (k - k_base) value to test
         k_delta = k_deltas[i];
 
@@ -278,12 +283,13 @@ a is precomputed on host ONCE.
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett76_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES)
+    mfaktc_barrett76_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES)
 #else
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
-    mfaktc_barrett76_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
-                        int192 b_preinit, unsigned int *RES, int bit_max64, unsigned int *modbasecase_debug)
+    mfaktc_barrett76_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64,
+                        unsigned int *modbasecase_debug)
 #endif
 /*
 computes 2^exp mod f
@@ -302,7 +308,7 @@ a is precomputed on host ONCE.
     initial_shifter_value = exp << (32 - shiftcount); // Initial shifter value
 
     // Loop til the k values written to shared memory are exhausted
-    for (i = threadIdx.x; i < total_bit_count; i += THREADS_PER_BLOCK) {
+    for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {
         // Get the (k - k_base) value to test
         k_delta = k_deltas[i];
 

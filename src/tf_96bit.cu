@@ -312,10 +312,12 @@ __device__ static void test_FC96_mfaktc_95(int96 f, int192 b, unsigned int exp, 
 __global__ void
 #ifdef SHORTCUT_75BIT
 __launch_bounds__(THREADS_PER_BLOCK, 2)
-    mfaktc_75(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES
+    mfaktc_75(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+              unsigned int *__restrict__ RES
 #else
 __launch_bounds__(THREADS_PER_BLOCK, 2)
-    mfaktc_95(unsigned int exp, int96 k, unsigned int *k_tab, int shiftcount, int192 b, unsigned int *RES
+    mfaktc_95(unsigned int exp, int96 k, const unsigned int *__restrict__ k_tab, int shiftcount, int192 b,
+              unsigned int *__restrict__ RES
 #endif
 #ifdef DEBUG_GPU_MATH
               ,
@@ -339,11 +341,13 @@ __launch_bounds__(THREADS_PER_BLOCK, 2)
 
 __global__ void
 #ifdef SHORTCUT_75BIT
-__launch_bounds__(THREADS_PER_BLOCK, 2) mfaktc_75_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process,
-                                                     int shiftcount, int192 b, unsigned int *RES
+__launch_bounds__(THREADS_PER_BLOCK, 2) mfaktc_75_gs(unsigned int exp, int96 k_base,
+                                                     const unsigned int *__restrict__ bit_array, unsigned int bits_to_process,
+                                                     int shiftcount, int192 b, unsigned int *__restrict__ RES
 #else
-__launch_bounds__(THREADS_PER_BLOCK, 2) mfaktc_95_gs(unsigned int exp, int96 k_base, unsigned int *bit_array, unsigned int bits_to_process,
-                                                     int shiftcount, int192 b, unsigned int *RES
+__launch_bounds__(THREADS_PER_BLOCK, 2) mfaktc_95_gs(unsigned int exp, int96 k_base,
+                                                     const unsigned int *__restrict__ bit_array, unsigned int bits_to_process,
+                                                     int shiftcount, int192 b, unsigned int *__restrict__ RES
 #endif
 #ifdef DEBUG_GPU_MATH
                                                      ,
@@ -361,7 +365,7 @@ __launch_bounds__(THREADS_PER_BLOCK, 2) mfaktc_95_gs(unsigned int exp, int96 k_b
     create_fbase96(&f_base, k_base, exp, bits_to_process);
 
     // Loop til the k values written to shared memory are exhausted
-    for (i = threadIdx.x; i < total_bit_count; i += THREADS_PER_BLOCK) {
+    for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {
         // Get the (k - k_base) value to test
         k_delta = k_deltas[i];
 

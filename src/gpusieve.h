@@ -25,4 +25,5 @@ void gpusieve_init(mystuff_t *mystuff);
 #endif
 void gpusieve_init_exponent(mystuff_t *mystuff);
 void gpusieve_init_class(mystuff_t *mystuff, unsigned long long k_min);
+void gpusieve_advance_class(mystuff_t *mystuff, unsigned int bits_advanced);
 void gpusieve(mystuff_t *mystuff, unsigned long long num_k_remaining);

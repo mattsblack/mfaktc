@@ -16,64 +16,52 @@ You should have received a copy of the GNU General Public License
 along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-__device__ static void create_k_deltas(unsigned int *bit_array, unsigned int bits_to_process, int *total_bit_count,
+__device__ static void create_k_deltas(const unsigned int *__restrict__ bit_array, unsigned int bits_to_process, int *total_bit_count,
                                        unsigned short *k_deltas)
 {
     int i, words_per_thread, sieve_word, k_bit_base;
-    __shared__ volatile unsigned short bitcount[256]; // Each thread of our block puts bit-counts here
+    unsigned int local_bit_count, inclusive_bit_count;
+    const unsigned int lane = threadIdx.x & (warpSize - 1);
+    const unsigned int warp = threadIdx.x / warpSize;
+    __shared__ unsigned short warp_bitcount[THREADS_PER_BLOCK / 32];
 
     // Get pointer to section of the bit_array this thread is processing.
 
-    words_per_thread = bits_to_process / 8192;
+    words_per_thread = bits_to_process / (blockDim.x * 32);
     bit_array += blockIdx.x * bits_to_process / 32 + threadIdx.x * words_per_thread;
 
     // Count number of bits set in this thread's word(s) from the bit_array
 
-    bitcount[threadIdx.x] = 0;
+    local_bit_count = 0;
     for (i = 0; i < words_per_thread; i++)
-        bitcount[threadIdx.x] += __popc(bit_array[i]);
+        local_bit_count += __popc(bit_array[i]);
 
-    // Create total count of bits set in block up to and including this threads popc.
-    // Kudos to Rocke Verser for the population counting code.
-    // CAUTION:  Following requires 256 threads per block
+    // Inclusive scan within each warp.  Shuffle operations avoid the five shared-memory
+    // round trips and four block barriers used by the original 256-entry scan.
+    inclusive_bit_count = local_bit_count;
+    for (unsigned int offset = 1; offset < warpSize; offset <<= 1) {
+        unsigned int value = __shfl_up_sync(0xFFFFFFFFU, inclusive_bit_count, offset);
+        if (lane >= offset) inclusive_bit_count += value;
+    }
 
-    // First five tallies remain within one warp.  Should be in lock-step.
-    if (threadIdx.x & 1) // If we are running on any thread 0bxxxxxxx1, tally neighbor's count.
-        bitcount[threadIdx.x] += bitcount[threadIdx.x - 1];
-
-    if (threadIdx.x & 2) // If we are running on any thread 0bxxxxxx1x, tally neighbor's count.
-        bitcount[threadIdx.x] += bitcount[(threadIdx.x - 2) | 1];
-
-    if (threadIdx.x & 4) // If we are running on any thread 0bxxxxx1xx, tally neighbor's count.
-        bitcount[threadIdx.x] += bitcount[(threadIdx.x - 4) | 3];
-
-    if (threadIdx.x & 8) // If we are running on any thread 0bxxxx1xxx, tally neighbor's count.
-        bitcount[threadIdx.x] += bitcount[(threadIdx.x - 8) | 7];
-
-    if (threadIdx.x & 16) // If we are running on any thread 0bxxx1xxxx, tally neighbor's count.
-        bitcount[threadIdx.x] += bitcount[(threadIdx.x - 16) | 15];
-
-    // Further tallies are across warps.  Must synchronize
+    if (lane == warpSize - 1) warp_bitcount[warp] = inclusive_bit_count;
     __syncthreads();
-    if (threadIdx.x & 32) // If we are running on any thread 0bxx1xxxxx, tally neighbor's count.
-        bitcount[threadIdx.x] += bitcount[(threadIdx.x - 32) | 31];
 
+    // Warp zero scans the per-warp totals.  THREADS_PER_BLOCK is the maximum
+    // supported block size; launches may use fewer threads.
+    if (warp == 0) {
+        unsigned int value = lane < (blockDim.x / warpSize) ? warp_bitcount[lane] : 0;
+        for (unsigned int offset = 1; offset < warpSize; offset <<= 1) {
+            unsigned int previous = __shfl_up_sync(0xFFFFFFFFU, value, offset);
+            if (lane >= offset) value += previous;
+        }
+        if (lane < (blockDim.x / warpSize)) warp_bitcount[lane] = value;
+    }
     __syncthreads();
-    if (threadIdx.x & 64) // If we are running on any thread 0bx1xxxxxx, tally neighbor's count.
-        bitcount[threadIdx.x] += bitcount[(threadIdx.x - 64) | 63];
 
-    __syncthreads();
-    if (threadIdx.x & 128) // If we are running on any thread 0b1xxxxxxx, tally neighbor's count.
-        bitcount[threadIdx.x] += bitcount[127];
-
-    // At this point, bitcount[...] contains the total number of bits for the indexed
-    // thread plus all lower-numbered threads.  I.e., bitcount[255] is the total count.
-
-    __syncthreads();
-    *total_bit_count = bitcount[255];
-
-    //POSSIBLE OPTIMIZATION - bitcounts and k_deltas could use the same memory space if we'd read bitcount into a register
-    // and sync threads before doing any writes to k_deltas.
+    unsigned int warp_offset = warp == 0 ? 0 : warp_bitcount[warp - 1];
+    inclusive_bit_count += warp_offset;
+    *total_bit_count = warp_bitcount[blockDim.x / warpSize - 1];
 
     //POSSIBLE SANITY CHECK -- is there any way to test if total_bit_count exceeds the amount of shared memory allocated?
 
@@ -81,7 +69,7 @@ __device__ static void create_k_deltas(unsigned int *bit_array, unsigned int bit
 
     sieve_word = *bit_array;
     k_bit_base = threadIdx.x * words_per_thread * 32;
-    for (i = *total_bit_count - bitcount[threadIdx.x];; i++) {
+    for (i = inclusive_bit_count - local_bit_count;; i++) {
         int bit_to_test;
 
         // Make sure we have a non-zero sieve word

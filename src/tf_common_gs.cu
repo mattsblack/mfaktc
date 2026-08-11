@@ -60,7 +60,9 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
     unsigned long long k_remaining;
     char string[50];
     int shared_mem_required;
+    int threads_per_block = THREADS_PER_BLOCK;
     int factorsfound = 0;
+    cudaError_t cuda_ret;
 
     // If we've never initialized the GPU sieving code, do so now.
     //  gpusieve_init (mystuff); // moved to main() function!
@@ -138,13 +140,46 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
     // FIXME: can't use all the shared memory for GPU sieve, lets keep 1kiB spare...
     if (mystuff->verbosity >= 3) printf("shared_mem_required = %d bytes\n", shared_mem_required + 1024);
 
-    if ((shared_mem_required + 1024) > mystuff->max_shared_memory) {
+    if ((shared_mem_required + 1024) > mystuff->max_shared_memory_per_block ||
+        (shared_mem_required + 1024) > mystuff->max_shared_memory) {
         printf("ERROR: Not enough shared memory available!\n");
-        printf("       Need %d bytes\n", shared_mem_required + 1024);
+        printf("       Need approximately %d bytes per block\n", shared_mem_required + 1024);
         printf("       You can lower GPUSieveProcessSize or increase GPUSievePrimes to lower\n");
         printf("       the amount of shared memory needed\n");
         exit(1);
     }
+
+    // Choose between 128- and 256-thread launches using the CUDA 13 occupancy
+    // calculator.  Cache the result because this host wrapper runs once for
+    // every factoring class, while its resource use is constant for a run.
+    static int cached_shared_mem_required = -1;
+    static int cached_threads_per_block = THREADS_PER_BLOCK;
+    int active_blocks_128 = 0, active_blocks_256 = 0;
+    if (cached_shared_mem_required != shared_mem_required) {
+        // Opt in to the required dynamic shared-memory size before asking the
+        // occupancy calculator about a launch that uses it.
+        cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
+        if (cuda_ret != cudaSuccess) {
+            printf("ERROR: could not configure %d bytes of dynamic shared memory: %s\n", shared_mem_required,
+                   cudaGetErrorString(cuda_ret));
+            return RET_CUDA_ERROR;
+        }
+        cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+        if (cuda_ret != cudaSuccess && mystuff->verbosity >= 2)
+            printf("WARNING: could not set the TF shared-memory carveout: %s\n", cudaGetErrorString(cuda_ret));
+
+        cached_threads_per_block = THREADS_PER_BLOCK;
+        if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_128, MFAKTC_FUNC, 128, shared_mem_required) == cudaSuccess &&
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_256, MFAKTC_FUNC, THREADS_PER_BLOCK, shared_mem_required) == cudaSuccess &&
+            active_blocks_128 * 128 > active_blocks_256 * THREADS_PER_BLOCK) {
+            cached_threads_per_block = 128;
+        }
+        cached_shared_mem_required = shared_mem_required;
+    }
+    threads_per_block = cached_threads_per_block;
+    if (mystuff->verbosity >= 3 && active_blocks_128 != 0)
+        printf("GPU TF launch: %d threads/block (%d vs %d resident threads/SM)\n", threads_per_block, active_blocks_128 * 128,
+               active_blocks_256 * THREADS_PER_BLOCK);
 
     // Loop until all the k's are processed
     for (;;) {
@@ -170,7 +205,7 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
 
         // Now let the GPU trial factor the candidates that survived the sieving
 
-        MFAKTC_FUNC<<<numblocks, THREADS_PER_BLOCK, shared_mem_required>>>(
+        MFAKTC_FUNC<<<numblocks, threads_per_block, shared_mem_required>>>(
             mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, mystuff->d_RES
 #if defined(TF_BARRETT) && \
     (defined(TF_BARRETT_87BIT_GS) || defined(TF_BARRETT_88BIT_GS) || defined(TF_BARRETT_92BIT_GS) || defined(DEBUG_GPU_MATH))
@@ -183,9 +218,6 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
 #endif
         );
 
-        // Sync before doing more GPU sieving
-        cudaDeviceSynchronize();
-
         // Count the number of blocks processed
         count += numblocks;
 
@@ -193,14 +225,15 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
         k_min += (unsigned long long)mystuff->gpu_sieve_size * NUM_CLASSES;
         if (k_min > k_max) break;
 
-        //BUG - we should call a different routine to advance the bit-to-clear values by gpusieve_size bits
-        // This will be cheaper than recomputing the bit-to-clears from scratch
-        // HOWEVER, the self-test code will ot check this new code unless we make the gpusieve_size much smaller
-        gpusieve_init_class(mystuff, k_min);
+        gpusieve_advance_class(mystuff, mystuff->gpu_sieve_size);
     }
 
     /* download results from GPU */
-    cudaMemcpy(mystuff->h_RES, mystuff->d_RES, 32 * sizeof(int), cudaMemcpyDeviceToHost);
+    cuda_ret = cudaMemcpy(mystuff->h_RES, mystuff->d_RES, 32 * sizeof(int), cudaMemcpyDeviceToHost);
+    if (cuda_ret != cudaSuccess) {
+        printf("ERROR: GPU-sieve trial factoring failed: %s\n", cudaGetErrorString(cuda_ret));
+        return RET_CUDA_ERROR;
+    }
 
 #ifdef DEBUG_GPU_MATH
     cudaMemcpy(mystuff->h_modbasecase_debug, mystuff->d_modbasecase_debug, 32 * sizeof(int), cudaMemcpyDeviceToHost);

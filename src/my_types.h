@@ -89,6 +89,7 @@ typedef struct {
     int cuda_toolkit;                        /* CUDA toolkit used for compiling) */
     int cuda_arch;                           /* CUDA arch (--generate-code during compiletime) selected for GPU */
     int max_shared_memory;                   /* maximum size of shared memory per multiprocessor (in byte) */
+    int max_shared_memory_per_block;         /* opt-in dynamic shared-memory limit per block */
   
     int checkpoints, checkpointdelay, mode, stages, stopafterfactor;
     int threads_per_grid_max, threads_per_grid;

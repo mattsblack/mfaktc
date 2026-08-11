@@ -38,9 +38,15 @@ NVCCFLAGS += --generate-code arch=compute_75,code=sm_75
 NVCCFLAGS += --generate-code arch=compute_80,code=sm_80
 NVCCFLAGS += --generate-code arch=compute_86,code=sm_86
 NVCCFLAGS += --generate-code arch=compute_87,code=sm_87
+NVCCFLAGS += --generate-code arch=compute_88,code=sm_88
 NVCCFLAGS += --generate-code arch=compute_89,code=sm_89
 NVCCFLAGS += --generate-code arch=compute_90,code=sm_90
+NVCCFLAGS += --generate-code arch=compute_100,code=sm_100
+NVCCFLAGS += --generate-code arch=compute_103,code=sm_103
+NVCCFLAGS += --generate-code arch=compute_110,code=sm_110
 NVCCFLAGS += --generate-code arch=compute_120,code=sm_120
+NVCCFLAGS += --generate-code arch=compute_121,code=sm_121
+NVCCFLAGS += --generate-code arch=compute_75,code=compute_75
 
 ############################################################
 

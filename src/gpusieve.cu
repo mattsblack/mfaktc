@@ -162,7 +162,6 @@ __device__ __inline static int mod_p(int x, int p, int pinv)
     if (pinv != gen_pinv(p)) printf("p doesn't match pinv!! p = %d, pinv = %d\n", p, pinv);
     if (r < 0 || r >= p) printf("x mod p out of range!! x = %d, p = %d, pinv = %d, r = %d\n", x, p, pinv, r);
 #endif
-    if (r < 0 || r >= p) printf("x mod p out of range!! x = %d, p = %d, pinv = %d, r = %d\n", x, p, pinv, r);
     return r;
 }
 
@@ -192,7 +191,6 @@ __device__ __inline static int mod_p_above64k(int x, int p, int pinv)
     if (pinv != gen_pinv(p)) printf("p doesn't match pinv!! p = %d, pinv = %d\n", p, pinv);
     if (r < 0 || r >= p) printf("x mod p out of range!! x = %d, p = %d, pinv = %d, r = %d\n", x, p, pinv, r);
 #endif
-    if (r < 0 || r >= p) printf("x mod p (above64k) out of range!! x = %d, p = %d, pinv = %d, r = %d\n", x, p, pinv, r);
     return r;
 }
 
@@ -1249,6 +1247,44 @@ __global__ static void __launch_bounds__(THREADS_PER_BLOCK, MIN_BLOCKS_PER_MP)
     }
 }
 
+// Advance the bit-to-clear values after processing a contiguous sieve batch.
+// Recomputing them from k_base requires several 64-bit remainder operations per
+// prime.  The recurrence below needs one 32-bit remainder and a subtract.
+__global__ static void __launch_bounds__(THREADS_PER_BLOCK, MIN_BLOCKS_PER_MP)
+    AdvanceBitToClear(uint32 bits_advanced, int *calc_info, uint8 *pinfo_dev)
+{
+    uint32 index;
+    uint32 mask = 0;
+
+    if (blockIdx.x == 0) {
+        if (threadIdx.x < primesNotSieved || threadIdx.x >= primesNotSieved + primesHandledWithSpecialCode) return;
+        pinfo_dev += threadIdx.x * 2;
+        index = threadIdx.x;
+    } else {
+        pinfo_dev += calc_info[blockIdx.x - 1];
+        pinfo_dev += threadIdx.x * 4;
+        index = calc_info[MAX_PRIMES_PER_THREAD + blockIdx.x - 1];
+        index += threadIdx.x * calc_info[MAX_PRIMES_PER_THREAD * 2 + blockIdx.x - 1];
+        mask = calc_info[MAX_PRIMES_PER_THREAD * 3 + blockIdx.x - 1];
+    }
+
+    const uint32 prime = calc_info[MAX_PRIMES_PER_THREAD * 4 + index * 2];
+    const uint32 delta = bits_advanced % prime;
+    uint32 bit_to_clear;
+
+    if (blockIdx.x == 0)
+        bit_to_clear = *pinfo16;
+    else
+        bit_to_clear = *pinfo32 & ~mask;
+
+    bit_to_clear = bit_to_clear >= delta ? bit_to_clear - delta : bit_to_clear + prime - delta;
+
+    if (blockIdx.x == 0)
+        *pinfo16 = bit_to_clear;
+    else
+        *pinfo32 = (*pinfo32 & mask) | bit_to_clear;
+}
+
 //
 // Sieve initialization done on the CPU
 //
@@ -1312,12 +1348,14 @@ extern "C" __host__ void gpusieve_init(mystuff_t *mystuff)
     if (gpusieve_initialized) return;
     gpusieve_initialized = 1;
 
-    // Prefer shared memory over L1 cache
-    if (cudaDeviceSetCacheConfig(cudaFuncCachePreferShared) != cudaSuccess) {
-        printf("WARNING: cudaDeviceSetCacheConfig(cudaFuncCachePreferShared); failed!\n");
+    // SegSieve benefits from shared-memory capacity, but setting a device-wide
+    // cache preference also penalizes the arithmetic-heavy TF kernels.  CUDA
+    // 13 permits a per-kernel carveout hint, avoiding global cache thrashing.
+    if (cudaFuncSetAttribute(SegSieve, cudaFuncAttributePreferredSharedMemoryCarveout, 100) != cudaSuccess) {
+        printf("WARNING: could not set the SegSieve shared-memory carveout\n");
     }
 
-    // Allocate the big sieve array (default is 128M bits)
+    // Allocate the configured big sieve array.
     checkCudaErrors(cudaMalloc((void **)&mystuff->d_bitarray, mystuff->gpu_sieve_size / 8));
 
 #ifdef RAW_GPU_BENCH
@@ -1653,7 +1691,6 @@ void gpusieve_init_exponent(mystuff_t *mystuff)
 
     // Calculate the modular inverses that will be used by each class to calculate initial bit-to-clear for each prime
     CalcModularInverses<<<primes_per_thread + 1, threadsPerBlock>>>(mystuff->exponent, (int *)mystuff->d_calc_bit_to_clear_info);
-    cudaDeviceSynchronize();
 }
 
 // GPU sieve initialization that needs to be done once for each class to be factored.
@@ -1675,7 +1712,16 @@ void gpusieve_init_class(mystuff_t *mystuff, unsigned long long k_min)
     // Calculate the initial bit-to-clear for each prime
     CalcBitToClear<<<primes_per_thread + 1, threadsPerBlock>>>(mystuff->exponent, k_base, (int *)mystuff->d_calc_bit_to_clear_info,
                                                                  (uint8 *)mystuff->d_sieve_info);
-    cudaDeviceSynchronize();
+}
+
+void gpusieve_advance_class(mystuff_t *mystuff, unsigned int bits_advanced)
+{
+#ifdef RAW_GPU_BENCH
+    return;
+#endif
+
+    AdvanceBitToClear<<<primes_per_thread + 1, threadsPerBlock>>>(bits_advanced, (int *)mystuff->d_calc_bit_to_clear_info,
+                                                                  (uint8 *)mystuff->d_sieve_info);
 }
 
 // GPU sieve the next chunk
@@ -1699,5 +1745,4 @@ void gpusieve(mystuff_t *mystuff, unsigned long long num_k_remaining)
     // Do some sieving on the GPU!
     SegSieve<<<(sieve_size + block_size - 1) / block_size, threadsPerBlock>>>((uint8 *)mystuff->d_bitarray,
                                                                               (uint8 *)mystuff->d_sieve_info, primes_per_thread);
-    cudaDeviceSynchronize();
 }
