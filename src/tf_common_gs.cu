@@ -42,6 +42,11 @@ extern "C" __host__ int tf_class_barrett79_gs(unsigned long long int k_min, unsi
 #elif defined TF_BARRETT_87BIT_GS
 extern "C" __host__ int tf_class_barrett87_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett87_gs
+#ifndef DEBUG_GPU_MATH
+#define MFAKTC_DUAL_BLOCK_KERNELS
+#define MFAKTC_FUNC_128 mfaktc_barrett87_gs_128
+#define MFAKTC_FUNC_256 mfaktc_barrett87_gs_256
+#endif
 #elif defined TF_BARRETT_88BIT_GS
 extern "C" __host__ int tf_class_barrett88_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett88_gs
@@ -158,19 +163,51 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
     if (cached_shared_mem_required != shared_mem_required) {
         // Opt in to the required dynamic shared-memory size before asking the
         // occupancy calculator about a launch that uses it.
-        cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
+        cuda_ret = cudaFuncSetAttribute(
+#ifdef MFAKTC_DUAL_BLOCK_KERNELS
+            MFAKTC_FUNC_128,
+#else
+            MFAKTC_FUNC,
+#endif
+            cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
+#ifdef MFAKTC_DUAL_BLOCK_KERNELS
+        if (cuda_ret == cudaSuccess)
+            cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC_256, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
+#endif
         if (cuda_ret != cudaSuccess) {
             printf("ERROR: could not configure %d bytes of dynamic shared memory: %s\n", shared_mem_required,
                    cudaGetErrorString(cuda_ret));
             return RET_CUDA_ERROR;
         }
-        cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+        cuda_ret = cudaFuncSetAttribute(
+#ifdef MFAKTC_DUAL_BLOCK_KERNELS
+            MFAKTC_FUNC_128,
+#else
+            MFAKTC_FUNC,
+#endif
+            cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+#ifdef MFAKTC_DUAL_BLOCK_KERNELS
+        if (cuda_ret == cudaSuccess)
+            cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC_256, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+#endif
         if (cuda_ret != cudaSuccess && mystuff->verbosity >= 2)
             printf("WARNING: could not set the TF shared-memory carveout: %s\n", cudaGetErrorString(cuda_ret));
 
         cached_threads_per_block = THREADS_PER_BLOCK;
-        if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_128, MFAKTC_FUNC, 128, shared_mem_required) == cudaSuccess &&
-            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_256, MFAKTC_FUNC, THREADS_PER_BLOCK, shared_mem_required) == cudaSuccess &&
+        if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_128,
+#ifdef MFAKTC_DUAL_BLOCK_KERNELS
+                                                          MFAKTC_FUNC_128,
+#else
+                                                          MFAKTC_FUNC,
+#endif
+                                                          128, shared_mem_required) == cudaSuccess &&
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_256,
+#ifdef MFAKTC_DUAL_BLOCK_KERNELS
+                                                          MFAKTC_FUNC_256,
+#else
+                                                          MFAKTC_FUNC,
+#endif
+                                                          THREADS_PER_BLOCK, shared_mem_required) == cudaSuccess &&
             active_blocks_128 * 128 > active_blocks_256 * THREADS_PER_BLOCK) {
             cached_threads_per_block = 128;
         }
@@ -205,6 +242,16 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
 
         // Now let the GPU trial factor the candidates that survived the sieving
 
+#ifdef MFAKTC_DUAL_BLOCK_KERNELS
+        if (threads_per_block == 128)
+            MFAKTC_FUNC_128<<<numblocks, 128, shared_mem_required>>>(
+                mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
+                mystuff->d_RES, mystuff->bit_min - 63);
+        else
+            MFAKTC_FUNC_256<<<numblocks, THREADS_PER_BLOCK, shared_mem_required>>>(
+                mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
+                mystuff->d_RES, mystuff->bit_min - 63);
+#else
         MFAKTC_FUNC<<<numblocks, threads_per_block, shared_mem_required>>>(
             mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, mystuff->d_RES
 #if defined(TF_BARRETT) && \
@@ -217,6 +264,7 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
             mystuff->d_modbasecase_debug
 #endif
         );
+#endif
 
         // Count the number of blocks processed
         count += numblocks;
@@ -277,3 +325,8 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
 }
 
 #undef MFAKTC_FUNC
+#ifdef MFAKTC_DUAL_BLOCK_KERNELS
+#undef MFAKTC_DUAL_BLOCK_KERNELS
+#undef MFAKTC_FUNC_128
+#undef MFAKTC_FUNC_256
+#endif

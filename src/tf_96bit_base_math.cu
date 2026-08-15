@@ -222,7 +222,24 @@ res.d0, res.d1 and res.d2 the result of mul_96_192_no_low() is 0 to 4 lower
 than of mul_96_192().
  */
 {
-#if (__CUDA_ARCH__ >= FERMI) &&                                                                                   \
+#if (__CUDA_ARCH__ >= MAXWELL) && (CUDART_VERSION >= 12000)
+    /* Accumulate columns 3..5 while intentionally omitting column 2 and its
+       carry.  This preserves Barrett's required underestimate and lets modern
+       NVCC lower the independent 32x32 products to wide IMAD sequences. */
+    const uint64_t p20 = (uint64_t)a.d2 * b.d0;
+    const uint64_t p21 = (uint64_t)a.d2 * b.d1;
+    const uint64_t p12 = (uint64_t)a.d1 * b.d2;
+    const uint64_t p02 = (uint64_t)a.d0 * b.d2;
+    const uint64_t p11 = (uint64_t)a.d1 * b.d1;
+    const uint64_t p22 = (uint64_t)a.d2 * b.d2;
+
+    const uint64_t column3 = (p20 >> 32) + (uint32_t)p21 + (uint32_t)p12 + (p02 >> 32) + (p11 >> 32);
+    const uint64_t column4 = (p21 >> 32) + (p12 >> 32) + (uint32_t)p22 + (column3 >> 32);
+
+    res->d3 = (uint32_t)column3;
+    res->d4 = (uint32_t)column4;
+    res->d5 = (uint32_t)((p22 >> 32) + (column4 >> 32));
+#elif (__CUDA_ARCH__ >= FERMI) &&                                                                                   \
     (CUDART_VERSION >= 4010) /* multiply-add with carry is not available on CC 1.x devices and before CUDA 4.1 */
     asm volatile("{\n\t"
                  "mul.hi.u32      %0, %5, %6;\n\t" /* (a.d2 * b.d0).hi */

@@ -94,6 +94,52 @@ bit_max64 is the number of bits in the factor (minus 64)
     }
 }
 
+#ifndef DEBUG_GPU_MATH
+/* Separate launch-bound variants let NVCC choose an independent register
+   budget and schedule for each block size. */
+__global__ __launch_bounds__(128, KERNEL_MIN_BLOCKS) void
+mfaktc_barrett87_gs_128(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)
+{
+    int96 f, f_base;
+    int i, initial_shifter_value, total_bit_count, k_delta;
+    extern __shared__ unsigned short k_deltas[];
+
+    create_k_deltas(bit_array, bits_to_process, &total_bit_count, k_deltas);
+    create_fbase96(&f_base, k_base, exp, bits_to_process);
+    initial_shifter_value = exp << (32 - shiftcount);
+
+    for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {
+        k_delta = k_deltas[i];
+        f.d0 = __add_cc(f_base.d0, __umul32(2 * k_delta * NUM_CLASSES, exp));
+        f.d1 = __addc_cc(f_base.d1, __umul32hi(2 * k_delta * NUM_CLASSES, exp));
+        f.d2 = __addc(f_base.d2, 0);
+        test_FC96_barrett87(f, b_preinit, initial_shifter_value, RES, bit_max64);
+    }
+}
+
+__global__ __launch_bounds__(256, KERNEL_MIN_BLOCKS) void
+mfaktc_barrett87_gs_256(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array,
+                        unsigned int bits_to_process, int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)
+{
+    int96 f, f_base;
+    int i, initial_shifter_value, total_bit_count, k_delta;
+    extern __shared__ unsigned short k_deltas[];
+
+    create_k_deltas(bit_array, bits_to_process, &total_bit_count, k_deltas);
+    create_fbase96(&f_base, k_base, exp, bits_to_process);
+    initial_shifter_value = exp << (32 - shiftcount);
+
+    for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {
+        k_delta = k_deltas[i];
+        f.d0 = __add_cc(f_base.d0, __umul32(2 * k_delta * NUM_CLASSES, exp));
+        f.d1 = __addc_cc(f_base.d1, __umul32hi(2 * k_delta * NUM_CLASSES, exp));
+        f.d2 = __addc(f_base.d2, 0);
+        test_FC96_barrett87(f, b_preinit, initial_shifter_value, RES, bit_max64);
+    }
+}
+#endif
+
 __global__ void
 #ifndef DEBUG_GPU_MATH
 __launch_bounds__(THREADS_PER_BLOCK, KERNEL_MIN_BLOCKS)
