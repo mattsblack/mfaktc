@@ -38,6 +38,7 @@ along with mfaktc (mfakto).  If not, see <http://www.gnu.org/licenses/>.
 #else
 #include <unistd.h>
 #include <sched.h>
+#include <sys/file.h>
 #define MODE       S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH
 static void Sleep(unsigned int ms)
 {
@@ -59,14 +60,34 @@ typedef struct _lockinfo {
 static unsigned int num_locked_files = 0;
 static lockinfo locked_files[MAX_LOCKED_FILES];
 
+/*
+remove_lock_files() is called at exit and removes any currently held lock
+files, such as those that remain when mfaktc exits because of an error or if
+Ctrl + C is pressed a second time while a file is locked. Such files can still
+be left behind by a crash or a power loss. fopen_and_lock() then waits until
+they are deleted: it doesn't take over lock files it didn't create, as there
+is no reliable way to tell whether the lock owner is still alive. Operating
+systems recycle process IDs, and other programs such as AutoPrimeNet may share
+the same directory as mfaktc.
+*/
+static void remove_lock_files(void)
+{
+    unsigned int i;
+
+    for (i = 0; i < num_locked_files; i++) {
+        close(locked_files[i].lockfd);
+        remove(locked_files[i].lock_filename);
+    }
+    num_locked_files = 0;
+}
+
 int make_temp_file(char *tpl)
 {
 #if defined _MSC_VER || defined __MINGW32__
     return _mktemp_s(tpl, strlen(tpl) + 1);
 #else
     int _temp_fd = mkstemp(tpl);
-    if (!_temp_fd)
-        return EINVAL;
+    if (_temp_fd == -1) return errno ? errno : EINVAL;
     close(_temp_fd);
     return 0;
 #endif
@@ -77,6 +98,12 @@ FILE *fopen_and_lock(const char *path, const char *mode)
     unsigned int i;
     int lockfd;
     FILE *f;
+    static int remove_lock_files_registered = 0;
+
+    if (!remove_lock_files_registered) {
+        atexit(remove_lock_files);
+        remove_lock_files_registered = 1;
+    }
 
     if (!path) {
         fprintf(stderr, "fopen_and_lock() called with NULL passed as path argument.\n");
@@ -102,7 +129,13 @@ FILE *fopen_and_lock(const char *path, const char *mode)
     for (i = 0;;) {
         if ((lockfd = open(locked_files[num_locked_files].lock_filename, O_EXCL | O_CREAT, MODE)) < 0) {
             if (errno == EEXIST) {
-                if (i == 0) fprintf(stderr, "%.250s already exists, waiting ...\n", locked_files[num_locked_files].lock_filename);
+                if (i == 0) {
+                    fprintf(stderr, "%.250s already exists, waiting ...\n", locked_files[num_locked_files].lock_filename);
+                    fprintf(
+                        stderr,
+                        "If no other program (such as AutoPrimeNet or another mfaktc instance) is using %.250s, the lock file was left behind by an unexpected exit and can be deleted.\n",
+                        path);
+                }
                 if (i < 1000) i++; // slowly increase sleep time up to 1 sec
                 Sleep(i);
                 continue;
@@ -114,9 +147,15 @@ FILE *fopen_and_lock(const char *path, const char *mode)
         break;
     }
 
+    if (lockfd < 0) {
+        /* The lock file could not be created for a reason other than
+           contention; do not pretend the file is locked. */
+        return NULL;
+    }
+
     locked_files[num_locked_files].lockfd = lockfd;
 
-    if (lockfd > 0 && i > 0) {
+    if (i > 0) {
         printf("Locked %.250s\n", path);
     }
 
@@ -160,4 +199,76 @@ int unlock_and_fclose(FILE *f)
         ret = fclose(f);
     }
     return ret;
+}
+
+/*
+lock_workfile() prevents multiple instances from working on the same
+worktodo.txt file, which would make them process the same set of assignments.
+It takes an exclusive lock on "<work file>.pid" and keeps it until the
+process exits; the operating system releases the lock when the process ends
+for any reason (such as a crash or power loss) so that mfaktc can be restarted
+even if a file is left behind. The file contains the process ID only for
+informational purposes.
+
+return values:
+0 = the lock was acquired
+1 = another process holds the lock
+-1 = could not create or lock the lock file; mfaktc will print the reason
+
+In the absense of a lock file, mfaktc cannot tell whether the worktodo.txt
+file is in use by another mfaktc instance.
+*/
+int lock_workfile(const char *workfile)
+{
+    char filename[256];
+    char pid[32];
+
+    snprintf(filename, sizeof(filename), "%.250s.pid", workfile);
+#if defined _MSC_VER || defined __MINGW32__
+    static HANDLE lock_handle = INVALID_HANDLE_VALUE;
+    OVERLAPPED ov;
+    DWORD written;
+
+    lock_handle = CreateFileA(filename, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, NULL);
+    if (lock_handle == INVALID_HANDLE_VALUE) {
+        fprintf(stderr, "Could not create \"%s\" (error %lu)\n", filename, (unsigned long)GetLastError());
+        return -1;
+    }
+    memset(&ov, 0, sizeof(ov));
+    if (!LockFileEx(lock_handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)) {
+        DWORD err = GetLastError();
+        CloseHandle(lock_handle);
+        lock_handle = INVALID_HANDLE_VALUE;
+        if (err == ERROR_LOCK_VIOLATION) return 1;
+        fprintf(stderr, "Could not lock \"%s\" (error %lu)\n", filename, (unsigned long)err);
+        return -1;
+    }
+    snprintf(pid, sizeof(pid), "%lu\n", (unsigned long)GetCurrentProcessId());
+    SetEndOfFile(lock_handle);
+    WriteFile(lock_handle, pid, (DWORD)strlen(pid), &written, NULL);
+    /* lock_handle stays open until the process exits */
+#else
+    static int lock_fd = -1;
+
+    lock_fd = open(filename, O_RDWR | O_CREAT, MODE);
+    if (lock_fd < 0) {
+        fprintf(stderr, "Could not create \"%s\" (%s)\n", filename, strerror(errno));
+        return -1;
+    }
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        int err = errno;
+        close(lock_fd);
+        lock_fd = -1;
+        if (err == EWOULDBLOCK) return 1;
+        fprintf(stderr, "Could not lock \"%s\" (%s)\n", filename, strerror(err));
+        return -1;
+    }
+    snprintf(pid, sizeof(pid), "%lu\n", (unsigned long)getpid());
+    if (ftruncate(lock_fd, 0) != 0 || write(lock_fd, pid, strlen(pid)) < 0) {
+        /* the lock itself is what matters, the PID is for information only */
+    }
+    /* lock_fd stays open until the process exits */
+#endif
+    return 0;
 }

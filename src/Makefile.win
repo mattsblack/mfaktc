@@ -1,7 +1,24 @@
 DEBUG = 0
+STATIC_RUNTIME = 0
+STATIC_CUDA = 0
 
 CC = cl
-CFLAGS = /W4 /I"$(CUDA_PATH)\include" /I"$(CUDA_PATH)\include\cudart" /nologo
+
+ifeq ($(STATIC_RUNTIME), 1)
+  ifeq ($(DEBUG), 1)
+    RUNTIME_FLAG = /MTd
+  else
+    RUNTIME_FLAG = /MT
+  endif
+else
+  ifeq ($(DEBUG), 1)
+    RUNTIME_FLAG = /MDd
+  else
+    RUNTIME_FLAG = /MD
+  endif
+endif
+
+CFLAGS = /W4 /I"$(CUDA_PATH)\include" /I"$(CUDA_PATH)\include\cudart" /nologo $(RUNTIME_FLAG)
 
 ifeq ($(DEBUG), 1)
   CFLAGS += /Od /Zi /RTC1
@@ -10,7 +27,7 @@ else
 endif
 
 NVCCFLAGS = -m64 --ptxas-options=-v -Wno-deprecated-gpu-targets
-CUFLAGS = -DWIN64 $(NVCCFLAGS)
+CUFLAGS = -DWIN64 $(NVCCFLAGS) -Xcompiler "$(RUNTIME_FLAG)"
 
 ifeq ($(DEBUG), 1)
   NVCCFLAGS += -g -G -O1
@@ -70,13 +87,17 @@ RC    = mfaktc.rc
 RES   = $(RC:.rc=.res)
 ICON  = mfaktc.ico
 
-LIBS = "$(CUDA_PATH)\lib\x64\cudart_static.lib"
+ifeq ($(STATIC_CUDA), 1)
+  LIBS = "$(CUDA_PATH)\lib\x64\cudart_static.lib"
+else
+  LIBS = "$(CUDA_PATH)\lib\x64\cudart.lib"
+endif
 
 INSTALL = copy
 
 ############################################################################################################
 
-all : ..\mfaktc-win-64.exe ..\mfaktc.ini
+all : ..\mfaktc-win-64.exe ..\mfaktc.ini.example
 
 ..\mfaktc-win-64.exe : $(COBJS) $(CUOBJS) $(RES)
 	$(LINK) $(LFLAGS) $^ $(LIBS) /out:$@
@@ -101,8 +122,11 @@ tf_75bit.obj : tf_96bit.cu
 %.obj : %.cu
 	nvcc -c $< -o $@ $(CUFLAGS)
 
-..\\%.ini : %.ini
-	$(INSTALL) $< ..
+# install the default settings as mfaktc.ini.example so that an existing
+# mfaktc.ini isn't overwritten; mfaktc creates mfaktc.ini from it on first
+# start unless a custom INI file is specified
+..\mfaktc.ini.example : mfaktc.ini
+	$(INSTALL) $< $@
 
 assets\\icons\\mfaktc.ico : assets\\icons\\mfaktc_16x16.png assets\\icons\\mfaktc_24x24.png assets\\icons\\mfaktc_32x32.png assets\\icons\\mfaktc_48x48.png assets\\icons\\mfaktc_256x256.png
 	magick convert $^ $@

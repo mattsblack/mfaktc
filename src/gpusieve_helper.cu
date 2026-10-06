@@ -16,11 +16,17 @@ You should have received a copy of the GNU General Public License
 along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+/* create_k_deltas() stores per-candidate bit offsets in [0, bits_to_process)
+   into k_deltas[] as unsigned short. bits_to_process is gpu_sieve_processing_size,
+   which is at most GPU_SIEVE_PROCESS_SIZE_MAX * 1024 bits; that must stay within
+   the 16-bit range or the offsets would silently truncate. */
+static_assert(GPU_SIEVE_PROCESS_SIZE_MAX * 1024 <= 65536, "GPU_SIEVE_PROCESS_SIZE_MAX too large for unsigned short k_deltas[]");
+
 __device__ static void create_k_deltas(const unsigned int *__restrict__ bit_array, unsigned int bits_to_process, int *total_bit_count,
-                                       unsigned short *k_deltas)
+                                       unsigned short *k_deltas, unsigned int *RES)
 {
-    int i, words_per_thread, sieve_word, k_bit_base;
-    unsigned int local_bit_count, inclusive_bit_count;
+    int i, words_per_thread, sieve_word, k_bit_base, bit_count;
+    unsigned int local_bit_count, inclusive_bit_count, dynamic_smem_size, max_bit_count;
     const unsigned int lane = threadIdx.x & (warpSize - 1);
     const unsigned int warp = threadIdx.x / warpSize;
     __shared__ unsigned short warp_bitcount[THREADS_PER_BLOCK / 32];
@@ -61,15 +67,28 @@ __device__ static void create_k_deltas(const unsigned int *__restrict__ bit_arra
 
     unsigned int warp_offset = warp == 0 ? 0 : warp_bitcount[warp - 1];
     inclusive_bit_count += warp_offset;
-    *total_bit_count = warp_bitcount[blockDim.x / warpSize - 1];
+    bit_count = warp_bitcount[blockDim.x / warpSize - 1];
 
-    //POSSIBLE SANITY CHECK -- is there any way to test if total_bit_count exceeds the amount of shared memory allocated?
+    // the host estimates the size of the dynamic shared memory k_deltas[]
+    // from the sieve parameters. If a block has more candidates than its
+    // buffer holds, then none are stored or tested. In this case, RES[31] is
+    // set so that the host stops instead of silently skipping them. However,
+    // this is not expected with the sizes used.
+    asm("mov.u32 %0, %%dynamic_smem_size;" : "=r"(dynamic_smem_size));
+    max_bit_count = dynamic_smem_size / sizeof(unsigned short);
+    if ((unsigned int)bit_count > max_bit_count) {
+        if (threadIdx.x == 0) RES[31] = bit_count;
+        *total_bit_count = 0;
+        words_per_thread = 0; // skip the loop below
+    } else {
+        *total_bit_count = bit_count;
+    }
 
     // Loop til this thread's section of the bit array is finished.
 
-    sieve_word = *bit_array;
+    sieve_word = words_per_thread ? *bit_array : 0;
     k_bit_base = threadIdx.x * words_per_thread * 32;
-    for (i = inclusive_bit_count - local_bit_count;; i++) {
+    for (i = inclusive_bit_count - local_bit_count; words_per_thread > 0; i++) {
         int bit_to_test;
 
         // Make sure we have a non-zero sieve word

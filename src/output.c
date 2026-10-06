@@ -410,6 +410,8 @@ const char *getOS()
     return "Linux";
 #elif defined(__unix__)
     return "Unix";
+#else
+    return "";
 #endif
 }
 
@@ -444,20 +446,20 @@ void print_result_line(mystuff_t *mystuff, int factorsfound)
     char aidjson[MAX_LINE_LENGTH + 11];
     char userjson[62]; /* 50 (V5UserID) + 11 spare + null character */
     char computerjson[66]; /* 50 (ComputerID) + 15 spare + null character */
-    char factorjson[514];
-    char factors_list[500];
-    char factors_quote_list[500];
+    char factorjson[MAX_FACTOR_BUFFER_LENGTH + 2 * MAX_FACTORS_PER_JOB + 20];
+    char factors_list[MAX_FACTOR_BUFFER_LENGTH];
+    char factors_quote_list[MAX_FACTOR_BUFFER_LENGTH + 2 * MAX_FACTORS_PER_JOB];
     char osjson[200];
     char details[50];
     char res_base_str[70];
     char txtstring[200];
-    char json_checksum_string[750];
+    char json_checksum_string[MAX_FACTOR_BUFFER_LENGTH + 300]; /* factors_list + the other fields at their maximum length */
     char timestamp[50];
 
     FILE *txtresultfile = NULL;
 
 #ifndef WAGSTAFF
-    char jsonstring[1350];
+    char jsonstring[MAX_FACTOR_BUFFER_LENGTH + 1000]; /* factorjson + the other fields at their maximum length */
     FILE *jsonresultfile = NULL;
 #endif
 
@@ -486,12 +488,16 @@ void print_result_line(mystuff_t *mystuff, int factorsfound)
         computerjson[0] = 0;
     }
 
+    int i = MAX_FACTORS_PER_JOB;
     if (factorsfound) {
-        int i = 0;
+        i = 0;
         qsort(mystuff->factors, MAX_FACTORS_PER_JOB, sizeof(mystuff->factors[0]), cmp_int96);
         while (i < MAX_FACTORS_PER_JOB && mystuff->factors[i].d0 == 0 && mystuff->factors[i].d1 == 0 && mystuff->factors[i].d2 == 0) {
             i++;
         }
+    }
+    // the self-tests count factors without storing them, then mystuff->factors[] is all zero
+    if (i < MAX_FACTORS_PER_JOB) {
         char factor[MAX_DEZ_96_STRING_LENGTH];
         print_dez96(mystuff->factors[i++], factor);
         factors_list_length       = sprintf(factors_list, "%s", factor);
@@ -518,17 +524,6 @@ void print_result_line(mystuff_t *mystuff, int factorsfound)
     getOSJSON(osjson);
     get_utc_timestamp(timestamp);
 
-    if (mystuff->mode == MODE_NORMAL) {
-#ifndef WAGSTAFF
-        jsonresultfile = fopen_and_lock(mystuff->jsonresultfile, "a");
-#endif
-        if (mystuff->legacy_results_txt == 1) {
-            txtresultfile = fopen_and_lock(mystuff->resultfile, "a");
-            if (mystuff->print_timestamp == 1) {
-                print_timestamp(mystuff, txtresultfile);
-            }
-        }
-    }
 #ifndef MORE_CLASSES
     bool partialresult = (mystuff->mode == MODE_NORMAL) && (mystuff->stats.class_counter < 96);
 #else
@@ -568,15 +563,30 @@ void print_result_line(mystuff_t *mystuff, int factorsfound)
         printf("%s\n", res_base_str);
     }
     if (mystuff->mode == MODE_NORMAL) {
+        /* Lock and write one result file at a time. Holding both locks at once could deadlock with another
+           program that locks them in the opposite order: mfakto locks results.txt first. */
 #ifndef WAGSTAFF
-        fprintf(jsonresultfile, "%s\n", jsonstring);
-        unlock_and_fclose(jsonresultfile);
-        jsonresultfile = NULL;
+        jsonresultfile = fopen_and_lock(mystuff->jsonresultfile, "a");
+        if (jsonresultfile != NULL) {
+            fprintf(jsonresultfile, "%s\n", jsonstring);
+            unlock_and_fclose(jsonresultfile);
+            jsonresultfile = NULL;
+        } else {
+            printf("Warning: could not open JSON result file \"%s\"\n", mystuff->jsonresultfile);
+        }
 #endif
         if (mystuff->legacy_results_txt == 1) {
-            fprintf(txtresultfile, "%s%s\n", UID, txtstring);
-            unlock_and_fclose(txtresultfile);
-            txtresultfile = NULL;
+            txtresultfile = fopen_and_lock(mystuff->resultfile, "a");
+            if (txtresultfile != NULL) {
+                if (mystuff->print_timestamp == 1) {
+                    print_timestamp(mystuff, txtresultfile);
+                }
+                fprintf(txtresultfile, "%s%s\n", UID, txtstring);
+                unlock_and_fclose(txtresultfile);
+                txtresultfile = NULL;
+            } else {
+                printf("Warning: could not open result file \"%s\"\n", mystuff->resultfile);
+            }
         }
     }
 }
@@ -603,7 +613,9 @@ void print_factor(mystuff_t *mystuff, int factor_number, char *factor)
 
     if (mystuff->mode == MODE_NORMAL && mystuff->legacy_results_txt == 1) {
         txtresultfile = fopen_and_lock(mystuff->resultfile, "a");
-        if (mystuff->print_timestamp == 1 && factor_number == 0) {
+        if (txtresultfile == NULL) {
+            printf("Warning: could not open result file \"%s\"\n", mystuff->resultfile);
+        } else if (mystuff->print_timestamp == 1 && factor_number == 0) {
             print_timestamp(mystuff, txtresultfile);
         }
     }
@@ -624,7 +636,7 @@ void print_factor(mystuff_t *mystuff, int factor_number, char *factor)
             }
             printf("%s\n", factor_str_base);
         }
-        if (mystuff->mode == MODE_NORMAL && mystuff->legacy_results_txt == 1) {
+        if (txtresultfile != NULL) {
             fprintf(txtresultfile, "%s%s\n", UID, factor_str);
         }
     } else /* factor_number >= 10 */
@@ -634,13 +646,13 @@ void print_factor(mystuff_t *mystuff, int factor_number, char *factor)
             printf("%s%u: %d additional factor%s not shown\n", NAME_NUMBERS, mystuff->exponent, extra_factors,
                    (extra_factors == 1) ? "" : "s");
         }
-        if (mystuff->mode == MODE_NORMAL && mystuff->legacy_results_txt == 1) {
+        if (txtresultfile != NULL) {
             fprintf(txtresultfile, "%s%s%u: %d additional factor%s not shown\n", UID, NAME_NUMBERS, mystuff->exponent, extra_factors,
                     (extra_factors == 1) ? "" : "s");
         }
     }
 
-    if (mystuff->mode == MODE_NORMAL && mystuff->legacy_results_txt == 1) {
+    if (txtresultfile != NULL) {
         unlock_and_fclose(txtresultfile);
     }
 }

@@ -73,7 +73,7 @@ void sieve_init()
 {
     int i, j, k;
     for (i = 0; i < 32; i++) {
-        mask1[i] = 1 << i;
+        mask1[i] = 1U << i;
         mask0[i] = 0xFFFFFFFF - mask1[i];
     }
     sieve      = sieve_malloc(SIEVE_SIZE);
@@ -242,6 +242,7 @@ void sieve_init_class(unsigned int exp, unsigned long long int k_start, int siev
             printf("  k= %d\n", k);
             printf("  p= %d\n", p);
             printf("  check= %" PRId64 "\n", check);
+            exit(1);
         }
     }
 

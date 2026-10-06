@@ -43,6 +43,7 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 #include "output.h"
 #include "gpusieve.h"
 #include "cuda_utils.h"
+#include "filelocking.h"
 
 unsigned long long int calculate_k(unsigned int exp, int bits)
 /* calculates biggest possible k in "2 * exp * k + 1 < 2^bits" */
@@ -354,6 +355,7 @@ int tf(mystuff_t *mystuff, int class_hint, unsigned long long int k_hint, int ke
                     logprintf(mystuff, "ERROR: cudaGetLastError() returned %d: %s\n", cudaError, cudaGetErrorString(cudaError));
                     return RET_CUDA_ERROR; /* bail out, we might have a serious problem (detected by cudaGetLastError())... */
                 }
+                if (numfactors == RET_CUDA_ERROR) return RET_CUDA_ERROR; /* error reported by tf_class_*() */
                 factorsfound += numfactors;
                 if (mystuff->mode == MODE_NORMAL) {
                     if (numfactors > 0) {
@@ -464,10 +466,16 @@ int tf(mystuff_t *mystuff, int class_hint, unsigned long long int k_hint, int ke
 
 /*  restart == 0 ==> time_est = time_run */
 #ifndef MORE_CLASSES
-        time_est = (time_run * 96ULL) / (unsigned long long int)(96 - restart);
+        const int total_classes = 96;
 #else
-        time_est = (time_run * 960ULL) / (unsigned long long int)(960 - restart);
+        const int total_classes = 960;
 #endif
+        /* restart == total_classes: the checkpoint was written after the last class, nothing to extrapolate from */
+        if (restart < total_classes) {
+            time_est = (time_run * (unsigned long long int)total_classes) / (unsigned long long int)(total_classes - restart);
+        } else {
+            time_est = time_run;
+        }
 
         if (time_est > 86400000ULL) {
             logprintf(mystuff, "%" PRIu64 "d ", time_run / 86400000ULL);
@@ -479,7 +487,7 @@ int tf(mystuff_t *mystuff, int class_hint, unsigned long long int k_hint, int ke
             logprintf(mystuff, "%2" PRIu64 "m ", (time_run / 60000ULL) % 60ULL);
         }
         logprintf(mystuff, "%2" PRIu64 ".%03" PRIu64 "s\n", (time_run / 1000ULL) % 60ULL, time_run % 1000ULL);
-        if (restart != 0) {
+        if (restart != 0 && restart < total_classes) {
             logprintf(mystuff, "      estimated total time spent: ");
             if (time_est > 86400000ULL) logprintf(mystuff, "%" PRIu64 "d ", time_est / 86400000ULL);
             if (time_est > 3600000ULL) logprintf(mystuff, "%2" PRIu64 "h ", (time_est / 3600000ULL) % 24ULL);
@@ -747,6 +755,10 @@ int main(int argc, char **argv)
     mystuff.addfilestatus = -1; /* -1 -> timer not initialized! */
     mystuff.cuda_toolkit  = CUDART_VERSION;
 
+    // create mfaktc.ini from mfaktc.ini.example on the first start unless a
+    // custom INI file is specified
+    create_inifile_from_example("mfaktc.ini");
+
     // need to see if we should log all the output before all of the other preamble
     my_read_int("mfaktc.ini", "Logging", &(mystuff.logging));
     if (mystuff.logging == 1 && mystuff.logfileptr == NULL) {
@@ -885,6 +897,28 @@ int main(int argc, char **argv)
 #endif
 
     read_config(&mystuff);
+
+    if (mystuff.mode == MODE_NORMAL && use_worktodo) {
+        int lock = lock_workfile(mystuff.workfile);
+        if (lock == 1) {
+            logprintf(&mystuff, "ERROR: \"%s\" is in use by another mfaktc instance\n", mystuff.workfile);
+            close_log(&mystuff);
+            return 1;
+        }
+        if (lock != 0 && mystuff.require_workfile_lock) {
+            logprintf(&mystuff,
+                      "ERROR: can't determine whether \"%s\" is in use by another mfaktc instance (see RequireWorkFileLock in mfaktc.ini)\n",
+                      mystuff.workfile);
+            close_log(&mystuff);
+            return 1;
+        }
+        if (lock != 0) {
+            logprintf(
+                &mystuff,
+                "Warning: can't determine whether \"%s\" is in use by another mfaktc instance, starting anyway (RequireWorkFileLock=0)\n",
+                mystuff.workfile);
+        }
+    }
 
     int drv_ver, rt_ver;
     cudaRuntimeGetVersion(&rt_ver);

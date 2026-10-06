@@ -26,17 +26,60 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 #include "my_types.h"
 #include "output.h"
 
+/*
+Release archives and "make" ship the default settings as mfaktc.ini.example so
+that the user's mfaktc.ini is not overwritten when mfaktc is upgraded or built
+from source. We create mfaktc.ini from mfaktc.ini.example if the former is not
+found when mfaktc starts.
+*/
+void create_inifile_from_example(const char *inifile)
+{
+    char example[64];
+    char buf[4096];
+    size_t n;
+    int failed = 0;
+    FILE *in, *out;
+
+    in = fopen(inifile, "r");
+    if (in) {
+        fclose(in);
+        return;
+    }
+    snprintf(example, sizeof(example), "%s.example", inifile);
+    in = fopen(example, "rb");
+    if (!in) return;
+    out = fopen(inifile, "wb");
+    if (!out) {
+        fclose(in);
+        printf("Warning: could not create \"%s\" from \"%s\"\n", inifile, example);
+        return;
+    }
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            failed = 1;
+            break;
+        }
+    }
+    if (ferror(in)) failed = 1;
+    fclose(in);
+    if (fclose(out) != 0) failed = 1;
+    if (failed)
+        printf("Warning: could not create \"%s\" from \"%s\"\n", inifile, example);
+    else
+        printf("Created \"%s\" from \"%s\"\n", inifile, example);
+}
+
 int my_read_int(char *inifile, char *name, int *value)
 {
     FILE *in;
-    char buf[100];
+    char buf[256];
     int found = 0;
 
     in = fopen(inifile, "r");
     if (!in) {
         return 1;
     }
-    while (fgets(buf, 100, in) && !found) {
+    while (fgets(buf, 250, in) && !found) {
         if (!strncmp(buf, name, strlen(name)) && buf[strlen(name)] == '=') {
             if (sscanf(&(buf[strlen(name) + 1]), "%d", value) == 1) {
                 found = 1;
@@ -68,14 +111,11 @@ int my_read_string(char *inifile, char *name, char *string, unsigned int len)
     }
     while (fgets(buf, 250, in) && !found) {
         if (!strncmp(buf, name, idx) && buf[idx] == '=') {
-            found = strlen(buf + idx + 1);
-            found = (len > found ? found : len) - 1;
-            if (found) {
-                strncpy(string, buf + idx + 1, found);
-                if (string[found - 1] == '\r') {
-                    found--;    // remove '\r' from string, this happens when reading a DOS/Windows formatted file on Linux
-                }
-            }
+            // the value ends at the line ending ("\r\n" when reading a DOS/Windows formatted file on Linux), but the
+            // last line of the file may not have one
+            found = strcspn(buf + idx + 1, "\r\n");
+            if (found >= len) found = len - 1;
+            memcpy(string, buf + idx + 1, found);
             string[found] = '\0';
         }
     }
@@ -376,6 +416,22 @@ int read_config(mystuff_t *mystuff)
         }
     }
     mystuff->addfiledelay = i;
+
+    /*****************************************************************************/
+
+    if (my_read_int("mfaktc.ini", "RequireWorkFileLock", &i)) {
+        i = 1; /* not in older INI files, enabled silently */
+    } else if (i != 0 && i != 1) {
+        logprintf(mystuff, "Warning: RequireWorkFileLock must be 0 or 1, enabled by default\n");
+        i = 1;
+    }
+    if (mystuff->verbosity >= 1) {
+        if (i == 0)
+            logprintf(mystuff, "  RequireWorkFileLock       disabled\n");
+        else
+            logprintf(mystuff, "  RequireWorkFileLock       enabled\n");
+    }
+    mystuff->require_workfile_lock = i;
 
     /*****************************************************************************/
 
