@@ -329,8 +329,11 @@ a is precomputed on host ONCE.
 #ifndef DEBUG_GPU_MATH
 /* Separate launch-bound variants let NVCC choose an independent register
    budget and schedule for each block size; the host times both and keeps the
-   faster one. */
-#define DEFINE_GS_VARIANT(BITS, THREADS)                                                                                              \
+   faster one.  The 76/77/79-bit variants accept bit_max64 but don't use it, so all
+   variants share one launch signature. */
+#define GS_TEST_ARGS_BIT_MAX (f, b_preinit, initial_shifter_value, RES, bit_max64)
+#define GS_TEST_ARGS         (f, b_preinit, initial_shifter_value, RES)
+#define DEFINE_GS_VARIANT(BITS, THREADS, TEST_ARGS)                                                                                   \
     __global__ __launch_bounds__(THREADS, KERNEL_MIN_BLOCKS) void mfaktc_barrett##BITS##_gs_##THREADS(                              \
         unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array, unsigned int bits_to_process, int shiftcount,   \
         int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)                                                            \
@@ -348,17 +351,25 @@ a is precomputed on host ONCE.
             f.d0    = __add_cc(f_base.d0, __umul32(2 * k_delta * NUM_CLASSES, exp));                                                \
             f.d1    = __addc_cc(f_base.d1, __umul32hi(2 * k_delta * NUM_CLASSES, exp));                                             \
             f.d2    = __addc(f_base.d2, 0);                                                                                         \
-            test_FC96_barrett##BITS(f, b_preinit, initial_shifter_value, RES, bit_max64);                                           \
+            test_FC96_barrett##BITS TEST_ARGS;                                                                                      \
         }                                                                                                                           \
     }
 
-DEFINE_GS_VARIANT(92, 128)
-DEFINE_GS_VARIANT(92, 256)
-DEFINE_GS_VARIANT(88, 128)
-DEFINE_GS_VARIANT(88, 256)
-DEFINE_GS_VARIANT(87, 128)
-DEFINE_GS_VARIANT(87, 256)
+DEFINE_GS_VARIANT(92, 128, GS_TEST_ARGS_BIT_MAX)
+DEFINE_GS_VARIANT(92, 256, GS_TEST_ARGS_BIT_MAX)
+DEFINE_GS_VARIANT(88, 128, GS_TEST_ARGS_BIT_MAX)
+DEFINE_GS_VARIANT(88, 256, GS_TEST_ARGS_BIT_MAX)
+DEFINE_GS_VARIANT(87, 128, GS_TEST_ARGS_BIT_MAX)
+DEFINE_GS_VARIANT(87, 256, GS_TEST_ARGS_BIT_MAX)
+DEFINE_GS_VARIANT(79, 128, GS_TEST_ARGS)
+DEFINE_GS_VARIANT(79, 256, GS_TEST_ARGS)
+DEFINE_GS_VARIANT(77, 128, GS_TEST_ARGS)
+DEFINE_GS_VARIANT(77, 256, GS_TEST_ARGS)
+DEFINE_GS_VARIANT(76, 128, GS_TEST_ARGS)
+DEFINE_GS_VARIANT(76, 256, GS_TEST_ARGS)
 #undef DEFINE_GS_VARIANT
+#undef GS_TEST_ARGS
+#undef GS_TEST_ARGS_BIT_MAX
 #endif
 
 #define TF_BARRETT

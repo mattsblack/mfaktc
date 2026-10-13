@@ -34,12 +34,27 @@ extern "C" __host__ int tf_class_95_gs(unsigned long long int k_min, unsigned lo
 #ifdef TF_BARRETT_76BIT_GS
     extern "C" __host__ int tf_class_barrett76_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett76_gs
+#ifndef DEBUG_GPU_MATH
+#define MFAKTC_DUAL_BLOCK_KERNELS
+#define MFAKTC_FUNC_128 mfaktc_barrett76_gs_128
+#define MFAKTC_FUNC_256 mfaktc_barrett76_gs_256
+#endif
 #elif defined TF_BARRETT_77BIT_GS
     extern "C" __host__ int tf_class_barrett77_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett77_gs
+#ifndef DEBUG_GPU_MATH
+#define MFAKTC_DUAL_BLOCK_KERNELS
+#define MFAKTC_FUNC_128 mfaktc_barrett77_gs_128
+#define MFAKTC_FUNC_256 mfaktc_barrett77_gs_256
+#endif
 #elif defined TF_BARRETT_79BIT_GS
 extern "C" __host__ int tf_class_barrett79_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett79_gs
+#ifndef DEBUG_GPU_MATH
+#define MFAKTC_DUAL_BLOCK_KERNELS
+#define MFAKTC_FUNC_128 mfaktc_barrett79_gs_128
+#define MFAKTC_FUNC_256 mfaktc_barrett79_gs_256
+#endif
 #elif defined TF_BARRETT_87BIT_GS
 extern "C" __host__ int tf_class_barrett87_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett87_gs
