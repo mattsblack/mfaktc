@@ -17,6 +17,7 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "gpusieve.h"
+#include "tf_autotune.cuh"
 
 #undef RAW_GPU_BENCH // FIXME
 
@@ -239,6 +240,52 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
         k_base.d0 = (int)(k_min & 0xFFFFFFFF);
         k_base.d1 = (int)(k_min >> 32);
         k_base.d2 = 0;
+
+#ifdef MFAKTC_DUAL_BLOCK_KERNELS
+        // Higher occupancy is not necessarily faster, so time both independently
+        // compiled variants on the first full sieve batch and keep the faster one.
+        // The arithmetic workload depends on the exponent and bit level, so
+        // recalibrate when those or the launch resources change.
+        static int tuned_device = -1, tuned_smem = -1, tuned_process_size = -1, tuned_bit_min = -1;
+        static unsigned int tuned_exponent = 0;
+        static int tuned_threads = THREADS_PER_BLOCK;
+        int current_device = -1;
+
+        cuda_ret = cudaGetDevice(&current_device);
+        if (cuda_ret != cudaSuccess) {
+            printf("ERROR: cudaGetDevice() failed: %s\n", cudaGetErrorString(cuda_ret));
+            return RET_CUDA_ERROR;
+        }
+        if (tuned_device == current_device && tuned_smem == shared_mem_required &&
+            tuned_process_size == mystuff->gpu_sieve_processing_size && tuned_exponent == mystuff->exponent &&
+            tuned_bit_min == mystuff->bit_min) {
+            threads_per_block = tuned_threads;
+        } else if (numblocks == mystuff->gpu_sieve_size / mystuff->gpu_sieve_processing_size) {
+            // Only a full batch is a representative sample; short batches keep the occupancy-based choice.
+            auto launch128 = [&](unsigned int *result) {
+                MFAKTC_FUNC_128<<<numblocks, 128, shared_mem_required>>>(mystuff->exponent, k_base, mystuff->d_bitarray,
+                                                                          mystuff->gpu_sieve_processing_size, shiftcount,
+                                                                          b_preinit, result, mystuff->bit_min - 63);
+            };
+            auto launch256 = [&](unsigned int *result) {
+                MFAKTC_FUNC_256<<<numblocks, THREADS_PER_BLOCK, shared_mem_required>>>(
+                    mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
+                    result, mystuff->bit_min - 63);
+            };
+            cuda_ret = mfaktc_time_block_variants(launch128, launch256, &tuned_threads);
+            if (cuda_ret != cudaSuccess) {
+                printf("ERROR: TF block-size calibration failed: %s\n", cudaGetErrorString(cuda_ret));
+                return RET_CUDA_ERROR;
+            }
+            tuned_device       = current_device;
+            tuned_smem         = shared_mem_required;
+            tuned_process_size = mystuff->gpu_sieve_processing_size;
+            tuned_exponent     = mystuff->exponent;
+            tuned_bit_min      = mystuff->bit_min;
+            threads_per_block  = tuned_threads;
+            if (mystuff->verbosity >= 2) printf("Timed TF launch selection: %d threads/block\n", threads_per_block);
+        }
+#endif
 
         // Now let the GPU trial factor the candidates that survived the sieving
 
