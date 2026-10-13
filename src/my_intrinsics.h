@@ -38,6 +38,16 @@ __device__ static unsigned int __umul32hi(unsigned int a, unsigned int b)
     return __umulhi(a, b);
 }
 
+__device__ static unsigned long long int __umul32wide(unsigned int a, unsigned int b)
+{
+    /* (unsigned long long)a * b is not used because NVCC hoists the zero-extension
+       of loop-invariant operands out of loops, turning the product into mul.lo.s64;
+       ptxas then adds the (zero) upper halves on every iteration. */
+    unsigned long long int r;
+    asm("mul.wide.u32 %0, %1, %2;" : "=l"(r) : "r"(a), "r"(b));
+    return r;
+}
+
 __device__ static unsigned int __add_cc(unsigned int a, unsigned int b)
 {
     unsigned int r;
