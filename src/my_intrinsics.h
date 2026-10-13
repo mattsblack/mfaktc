@@ -19,15 +19,16 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 __device__ static unsigned int __umul24hi(unsigned int a, unsigned int b)
 {
     unsigned int r;
-    asm volatile("mul24.hi.u32 %0, %1, %2;" : "=r"(r) : "r"(a), "r"(b));
+    asm("mul24.hi.u32 %0, %1, %2;" : "=r"(r) : "r"(a), "r"(b));
     return r;
 }
 
+/* Only the intrinsics that read or write the carry flag need asm volatile, so the
+   compiler can't reorder them; the carry flag is invisible to it. The others are
+   plain C so they can be combined (e.g. into funnel shifts) and deduplicated. */
 __device__ static unsigned int __umul32(unsigned int a, unsigned int b)
 {
-    unsigned int r;
-    asm volatile("mul.lo.u32 %0, %1, %2;" : "=r"(r) : "r"(a), "r"(b));
-    return r;
+    return a * b;
 }
 
 __device__ static unsigned int __umul32hi(unsigned int a, unsigned int b)
@@ -92,9 +93,7 @@ __device__ static unsigned int __subc(unsigned int a, unsigned int b)
 
 __device__ static unsigned int __umad32(unsigned int a, unsigned int b, unsigned int c)
 {
-    unsigned int r;
-    asm volatile("mad.lo.u32 %0, %1, %2, %3;" : "=r"(r) : "r"(a), "r"(b), "r"(c));
-    return r;
+    return a * b + c;
 }
 
 __device__ static unsigned int __umad32_cc(unsigned int a, unsigned int b, unsigned int c)
@@ -120,9 +119,7 @@ __device__ static unsigned int __umad32c_cc(unsigned int a, unsigned int b, unsi
 
 __device__ static unsigned int __umad32hi(unsigned int a, unsigned int b, unsigned int c)
 {
-    unsigned int r;
-    asm volatile("mad.hi.u32 %0, %1, %2, %3;" : "=r"(r) : "r"(a), "r"(b), "r"(c));
-    return r;
+    return __umulhi(a, b) + c;
 }
 
 __device__ static unsigned int __umad32hi_cc(unsigned int a, unsigned int b, unsigned int c)
