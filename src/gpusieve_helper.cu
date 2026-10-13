@@ -25,22 +25,24 @@ static_assert(GPU_SIEVE_PROCESS_SIZE_MAX * 1024 <= 65536, "GPU_SIEVE_PROCESS_SIZ
 __device__ static void create_k_deltas(const unsigned int *__restrict__ bit_array, unsigned int bits_to_process, int *total_bit_count,
                                        unsigned short *k_deltas, unsigned int *RES)
 {
-    int i, words_per_thread, sieve_word, k_bit_base, bit_count;
-    unsigned int local_bit_count, inclusive_bit_count, dynamic_smem_size, max_bit_count;
-    const unsigned int lane = threadIdx.x & (warpSize - 1);
-    const unsigned int warp = threadIdx.x / warpSize;
-    __shared__ unsigned short warp_bitcount[THREADS_PER_BLOCK / 32];
+    unsigned int word, bit_count, local_bit_count, inclusive_bit_count, dynamic_smem_size, max_bit_count;
+    const unsigned int lane      = threadIdx.x & (warpSize - 1);
+    const unsigned int warp      = threadIdx.x / warpSize;
+    const unsigned int num_words = bits_to_process / 32;
+    __shared__ unsigned int warp_bitcount[THREADS_PER_BLOCK / 32];
 
-    // Get pointer to section of the bit_array this thread is processing.
+    // Get pointer to section of the bit_array this block is processing.  Words are
+    // assigned block-strided so adjacent lanes read adjacent words (coalesced loads).
+    // This means k_deltas[] is no longer ordered by bit position, which is fine
+    // because every candidate is tested independently.
 
-    words_per_thread = bits_to_process / (blockDim.x * 32);
-    bit_array += blockIdx.x * bits_to_process / 32 + threadIdx.x * words_per_thread;
+    bit_array += blockIdx.x * num_words;
 
     // Count number of bits set in this thread's word(s) from the bit_array
 
     local_bit_count = 0;
-    for (i = 0; i < words_per_thread; i++)
-        local_bit_count += __popc(bit_array[i]);
+    for (word = threadIdx.x; word < num_words; word += blockDim.x)
+        local_bit_count += __popc(bit_array[word]);
 
     // Inclusive scan within each warp.  Shuffle operations avoid the five shared-memory
     // round trips and four block barriers used by the original 256-entry scan.
@@ -76,41 +78,23 @@ __device__ static void create_k_deltas(const unsigned int *__restrict__ bit_arra
     // this is not expected with the sizes used.
     asm("mov.u32 %0, %%dynamic_smem_size;" : "=r"(dynamic_smem_size));
     max_bit_count = dynamic_smem_size / sizeof(unsigned short);
-    if ((unsigned int)bit_count > max_bit_count) {
-        if (threadIdx.x == 0) RES[31] = bit_count;
+    if (bit_count > max_bit_count) {
+        // atomicMax keeps the reported count well-defined when several blocks overflow
+        if (threadIdx.x == 0) atomicMax(&RES[31], bit_count);
         *total_bit_count = 0;
-        words_per_thread = 0; // skip the loop below
-    } else {
-        *total_bit_count = bit_count;
+        return; // bit_count is block-uniform, so every thread of the block returns here
     }
+    *total_bit_count = bit_count;
 
-    // Loop til this thread's section of the bit array is finished.
+    // Copy the k values of this thread's words to the shared memory array
 
-    sieve_word = words_per_thread ? *bit_array : 0;
-    k_bit_base = threadIdx.x * words_per_thread * 32;
-    for (i = inclusive_bit_count - local_bit_count; words_per_thread > 0; i++) {
-        int bit_to_test;
-
-        // Make sure we have a non-zero sieve word
-
-        while (sieve_word == 0) {
-            if (--words_per_thread == 0) break;
-            sieve_word = *++bit_array;
-            k_bit_base += 32;
+    unsigned int i = inclusive_bit_count - local_bit_count;
+    for (word = threadIdx.x; word < num_words; word += blockDim.x) {
+        unsigned int sieve_word = bit_array[word];
+        while (sieve_word != 0) {
+            k_deltas[i++] = (word << 5) + (__ffs(sieve_word) - 1);
+            sieve_word &= sieve_word - 1; // clear lowest set bit
         }
-
-        // Check if this thread has processed all its set bits
-
-        if (sieve_word == 0) break;
-
-        // Find a bit to test in the sieve word
-
-        bit_to_test = 31 - __clz(sieve_word);
-        sieve_word &= ~(1 << bit_to_test);
-
-        // Copy the k value to the shared memory array
-
-        k_deltas[i] = k_bit_base + bit_to_test;
     }
 
     __syncthreads();
