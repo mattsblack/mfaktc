@@ -94,6 +94,10 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
     int threads_per_block = THREADS_PER_BLOCK;
     int factorsfound = 0;
     cudaError_t cuda_ret;
+    const unsigned long long int original_k_min = k_min;
+    // Set after a candidate buffer overflow; from then on this wrapper keeps the
+    // larger buffer.
+    static int conservative_candidate_buffer = 0;
 
     // If we've never initialized the GPU sieving code, do so now.
     //  gpusieve_init (mystuff); // moved to main() function!
@@ -139,8 +143,16 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
     else
         b_preinit.d5 = 1 << (ln2b - 160); // b_preinit = 2^ln2b
 
+restart_class:
+    k_min = original_k_min;
+    count = 0;
+
     /* set result array to 0, RES[0] is the factor count and RES[31] flags a candidate buffer overflow */
-    cudaMemset(mystuff->d_RES, 0, 32 * sizeof(int));
+    cuda_ret = cudaMemset(mystuff->d_RES, 0, 32 * sizeof(int));
+    if (cuda_ret != cudaSuccess) {
+        printf("ERROR: could not reset TF results: %s\n", cudaGetErrorString(cuda_ret));
+        return RET_CUDA_ERROR;
+    }
 
 #ifdef DEBUG_GPU_MATH
     cudaMemset(mystuff->d_modbasecase_debug, 0, 32 * sizeof(int));
@@ -166,7 +178,18 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
     else
         shared_mem_required = 22; // 67894 primes expect 19.94%
 #endif
-    shared_mem_required = mystuff->gpu_sieve_processing_size * sizeof(int) * shared_mem_required / 100;
+    {
+        // k_deltas[] holds one unsigned short per candidate.  The old allocation of
+        // sizeof(int) per estimated candidate is a 2x margin; start with 1.5x, which
+        // can fit more blocks per SM, and fall back to 2x if a block overflows.
+        // A block never has more candidates than bits, so cap the capacity there.
+        const size_t estimated_candidates = ((size_t)mystuff->gpu_sieve_processing_size * shared_mem_required + 99) / 100;
+        size_t candidate_capacity =
+            conservative_candidate_buffer ? estimated_candidates * 2 : (estimated_candidates * 3 + 1) / 2;
+        if (candidate_capacity > (size_t)mystuff->gpu_sieve_processing_size)
+            candidate_capacity = (size_t)mystuff->gpu_sieve_processing_size;
+        shared_mem_required = (int)(((candidate_capacity * sizeof(unsigned short)) + 255) & ~(size_t)255);
+    }
 
     // FIXME: can't use all the shared memory for GPU sieve, lets keep 1kiB spare...
     if (mystuff->verbosity >= 3) printf("shared_mem_required = %d bytes\n", shared_mem_required + 1024);
@@ -353,6 +376,16 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
     if (cuda_ret != cudaSuccess) {
         printf("ERROR: GPU-sieve trial factoring failed: %s\n", cudaGetErrorString(cuda_ret));
         return RET_CUDA_ERROR;
+    }
+
+    // An overflowing block skipped all its candidates, so the whole class must be
+    // redone from its original k_min.  The class timer keeps running across the retry.
+    if (mystuff->h_RES[31] != 0 && !conservative_candidate_buffer) {
+        if (mystuff->verbosity >= 1)
+            printf("GPU sieve block had %u candidates, more than its buffer of %d holds; retrying class with a larger buffer\n",
+                   mystuff->h_RES[31], shared_mem_required / (int)sizeof(unsigned short));
+        conservative_candidate_buffer = 1;
+        goto restart_class;
     }
 
 #ifdef DEBUG_GPU_MATH
