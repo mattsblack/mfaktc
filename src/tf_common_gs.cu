@@ -51,9 +51,19 @@ extern "C" __host__ int tf_class_barrett87_gs(unsigned long long int k_min, unsi
 #elif defined TF_BARRETT_88BIT_GS
 extern "C" __host__ int tf_class_barrett88_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett88_gs
+#ifndef DEBUG_GPU_MATH
+#define MFAKTC_DUAL_BLOCK_KERNELS
+#define MFAKTC_FUNC_128 mfaktc_barrett88_gs_128
+#define MFAKTC_FUNC_256 mfaktc_barrett88_gs_256
+#endif
 #else
 extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett92_gs
+#ifndef DEBUG_GPU_MATH
+#define MFAKTC_DUAL_BLOCK_KERNELS
+#define MFAKTC_FUNC_128 mfaktc_barrett92_gs_128
+#define MFAKTC_FUNC_256 mfaktc_barrett92_gs_256
+#endif
 #endif
 #endif
 {
