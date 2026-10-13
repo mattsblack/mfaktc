@@ -288,7 +288,7 @@ __device__ __inline static void bitOrSometimesIffy(uint8 *locsieve, uint32 bclr)
 */
 
 __global__ static void __launch_bounds__(THREADS_PER_BLOCK, MIN_BLOCKS_PER_MP)
-    SegSieve(uint8 *big_bit_array_dev, uint8 *pinfo_dev, uint32 maxp)
+    SegSieve(uint8 *__restrict__ big_bit_array_dev, const uint8 *__restrict__ pinfo_dev, uint32 maxp)
 {
     __shared__ uint8 locsieve[block_size_in_bytes];
     uint32 block_start = blockIdx.x * block_size;
