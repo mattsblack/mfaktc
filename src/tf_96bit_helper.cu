@@ -169,11 +169,19 @@ are "out of range".
     }
 #endif
 
+#if (__CUDA_ARCH__ >= MAXWELL) && (CUDART_VERSION >= 12000)
+    const uint64_t t0 = __umul32wide(n.d0, qi);
+    const uint64_t t1 = __umul32wide(n.d1, qi) + (t0 >> 32);
+    nn.d0             = (uint32_t)t0;
+    nn.d1             = (uint32_t)t1;
+    nn.d2             = n.d2 * qi + (uint32_t)(t1 >> 32);
+#else
     // clang-format off
     nn.d0 =                          __umul32(n.d0, qi);
     nn.d1 = __umad32hi_cc (n.d0, qi, __umul32(n.d1, qi));
     nn.d2 = __umad32hic   (n.d1, qi, __umul32(n.d2, qi));
     // clang-format on
+#endif
 
     trace_96_96(__FILE__, __LINE__, n, "nn", nn);
 
