@@ -244,6 +244,13 @@ __device__ __inline static int bump_mod_p(int i, int inc, int p)
     return x;
 }
 
+// 1 << (bclr & 7), as the low byte of 0x01010101 rotated left by bclr (mod 32).
+// Avoids the & 7 and the shift-amount clamp ptxas adds for a variable shift.
+__device__ __inline static uint8 bitmask8(uint32 bclr)
+{
+    return (uint8)__funnelshift_l(0x01010101U, 0x01010101U, bclr);
+}
+
 // Inline to OR one bit into the shared memory array
 
 __device__ __inline static void bitOr(uint8 *locsieve, uint32 bclr)
@@ -252,13 +259,13 @@ __device__ __inline static void bitOr(uint8 *locsieve, uint32 bclr)
 #define locsieve8v  ((volatile uint8 *)locsieve)
 #define locsieve32  ((uint32 *)locsieve)
 #define locsieve32v ((volatile uint32 *)locsieve)
-    locsieve8[bclr >> 3] |= 1 << (bclr & 7);
+    locsieve8[bclr >> 3] |= bitmask8(bclr);
 }
 
 __device__ __inline static void bitOrSometimesIffy(uint8 *locsieve, uint32 bclr)
 {
     uint32 bytenum = bclr >> 3;
-    uint8 mask     = 1 << (bclr & 7);
+    uint8 mask     = bitmask8(bclr);
     uint32 val     = locsieve8[bytenum];
     if (!(val & mask)) locsieve8[bytenum] = val | mask;
 }
@@ -790,7 +797,7 @@ __global__ static void __launch_bounds__(THREADS_PER_BLOCK, MIN_BLOCKS_PER_MP)
 
 #define SIEVE_256_BIT(n, p)                                                                        \
     i = mod_const_p(bit_to_clr[n] - thread_start, p);                                              \
-    if (i < 256) locsieve[j * threadsPerBlock * 32 + threadIdx.x * 32 + (i >> 3)] |= 1 << (i & 7);
+    if (i < 256) locsieve[j * threadsPerBlock * 32 + threadIdx.x * 32 + (i >> 3)] |= bitmask8(i);
 
     if (primesNotSieved + primesHandledWithSpecialCode > 54)
         for (j = 0; j < block_size / (threadsPerBlock * 256); j++) {
@@ -868,7 +875,7 @@ __global__ static void __launch_bounds__(THREADS_PER_BLOCK, MIN_BLOCKS_PER_MP)
             validate_bclr(bclr, p);
 
             bclr = mod_p(bclr - block_start, p, pinv) + (threadIdx.x & 7) * p;
-            mask = 1 << (bclr & 7);
+            mask = bitmask8(bclr);
             bclr = bclr >> 3;
 
             // Clear bits
