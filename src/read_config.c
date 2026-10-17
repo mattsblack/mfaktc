@@ -355,6 +355,33 @@ int read_config(mystuff_t *mystuff)
             logprintf(mystuff, "  GPUSieveProcessSize       %d Kib\n", i);
         }
         mystuff->gpu_sieve_processing_size = i * 1024;
+
+        /*****************************************************************************/
+
+        if (my_read_int("mfaktc.ini", "GPUSieveSegmentSize", &i)) {
+            i = GPU_SIEVE_SEGMENT_SIZE_DEFAULT;
+        } else if (i != 64 && i != 128 && i != 256) {
+            logprintf(mystuff, "Warning: GPUSieveSegmentSize must be 64, 128 or 256, using default value (%d)\n",
+                      GPU_SIEVE_SEGMENT_SIZE_DEFAULT);
+            i = GPU_SIEVE_SEGMENT_SIZE_DEFAULT;
+        }
+        if (mystuff->verbosity >= 2) {
+            logprintf(mystuff, "  GPUSieveSegmentSize       %d Kib\n", i);
+        }
+        mystuff->gpu_sieve_segment_size = i * 1024;
+
+        /*****************************************************************************/
+
+        if (my_read_int("mfaktc.ini", "GPUSieveAtomicMarks", &i)) {
+            i = 0;
+        } else if (i != 0 && i != 1) {
+            logprintf(mystuff, "Warning: GPUSieveAtomicMarks must be 0 or 1, using default value (0)\n");
+            i = 0;
+        }
+        if (mystuff->verbosity >= 2) {
+            logprintf(mystuff, "  GPUSieveAtomicMarks       %s\n", i ? "enabled" : "disabled");
+        }
+        mystuff->gpu_sieve_atomic_marks = i;
     }
 
     /*****************************************************************************/

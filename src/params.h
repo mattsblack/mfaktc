@@ -180,6 +180,8 @@ The following lines define the min, default and max value.
 #define GPU_SIEVE_PROCESS_SIZE_DEFAULT      16 /* Default is processing 16 Kib */
 #define GPU_SIEVE_PROCESS_SIZE_MAX          32 /* Upper limit is 64K, since we store k values as "short".
                                                   Not validated and shared memory might be an issue! */
+
+#define GPU_SIEVE_SEGMENT_SIZE_DEFAULT      64 /* Kib sieved by each GPU sieve block; 64, 128 or 256 */
 // clang-format on
 
 #ifdef WAGSTAFF
