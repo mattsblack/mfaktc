@@ -90,6 +90,48 @@ jobs:
           path: ${{ github.workspace }}
 # End job "Linux"
 
+# Begin job "Linux-CUDA"
+  # Builds the unmodified Makefile with NVIDIA's toolkits, so that its
+  # architecture and host compiler detection is tested at both ends of the
+  # supported CUDA range.
+  Linux-CUDA:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        # Each version must exist as nvcr.io/nvidia/cuda:<version>-devel-rockylinux8
+        cuda_version: ['12.4.1', '12.8.2', '13.0.3', '13.4.0']
+
+    steps:
+
+      - name: Start Docker container
+        run: |
+          docker run --rm --name build-container -d -v "${GITHUB_WORKSPACE}:/workspace" "nvcr.io/nvidia/cuda:${{ matrix.cuda_version }}-devel-rockylinux8" tail -f /dev/null
+
+      - name: Install dependencies inside container
+        run: |
+          docker exec -i build-container bash -s -e -o pipefail <<'EOF'
+            dnf install -y gcc gcc-c++ make
+            nvcc --version
+          EOF
+
+      - name: Checkout repo
+        uses: actions/checkout@v7
+
+      - name: Build from sources
+        run: |
+          docker exec -i -w /workspace/src build-container bash -s -e -o pipefail <<'EOF'
+            make -j$(nproc)
+            make clean
+          EOF
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f build-container || true
+# End job "Linux-CUDA"
+
 # Begin job "Windows"
   Windows:
     # windows-2022 also works and produces nearly identical binaries, so let's

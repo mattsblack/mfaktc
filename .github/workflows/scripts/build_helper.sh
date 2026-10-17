@@ -78,11 +78,9 @@ CC_MAX="${CC_LIST[-1]:0:-1}.${CC_LIST[-1]: -1}"
 echo "All supported CCs: ${CC_LIST[*]}, CC_MIN=${CC_MIN}, CC_MAX=${CC_MAX}"
 echo -e "CC_LIST=\"${CC_LIST[*]}\"\nCC_MIN=${CC_MIN}\nCC_MAX=${CC_MAX}" >>"$0.out"
 
-echo 'Removing NVCCFLAGS strings with "arch=..." entries from makefiles and populating them with discovered supported values.'
-sed -i '/^NVCCFLAGS += --generate-code arch=compute.*/d' src/Makefile.win src/Makefile
-for CC in "${CC_LIST[@]}"; do
-  sed -i "/^NVCCFLAGS = .*\$/a NVCCFLAGS += --generate-code arch=compute_${CC},code=sm_${CC}" src/Makefile src/Makefile.win
-done
+echo 'Setting CUDA_ARCHS in makefiles to the discovered supported values.'
+# CUDA_ARCHS skips the makefiles' own detection, which needs nvcc --list-gpu-code (CUDA 11 and later)
+sed -i "/^CUDA_ARCHS_WANTED = .*\$/a CUDA_ARCHS = ${CC_LIST[*]}" src/Makefile src/Makefile.win
 
 if [[ $CUDA_VER -ge 1100 ]]; then
   echo 'Adding NVCCFLAGS to allow unsupported MSVC versions...'

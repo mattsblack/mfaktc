@@ -41,29 +41,28 @@ endif
 
 # generate code for compute capabilities - see this table for supported
 # versions: https://en.wikipedia.org/wiki/CUDA#GPUs_supported
-
-# removed in CUDA 13.x - uncomment to enable
-# NVCCFLAGS += --generate-code arch=compute_50,code=sm_50
-# NVCCFLAGS += --generate-code arch=compute_60,code=sm_60
-# NVCCFLAGS += --generate-code arch=compute_61,code=sm_61
-# NVCCFLAGS += --generate-code arch=compute_62,code=sm_62
-# NVCCFLAGS += --generate-code arch=compute_70,code=sm_70
-# NVCCFLAGS += --generate-code arch=compute_72,code=sm_72
-
-# currently supported
-NVCCFLAGS += --generate-code arch=compute_75,code=sm_75
-NVCCFLAGS += --generate-code arch=compute_80,code=sm_80
-NVCCFLAGS += --generate-code arch=compute_86,code=sm_86
-NVCCFLAGS += --generate-code arch=compute_87,code=sm_87
-NVCCFLAGS += --generate-code arch=compute_88,code=sm_88
-NVCCFLAGS += --generate-code arch=compute_89,code=sm_89
-NVCCFLAGS += --generate-code arch=compute_90,code=sm_90
-NVCCFLAGS += --generate-code arch=compute_100,code=sm_100
-NVCCFLAGS += --generate-code arch=compute_103,code=sm_103
-NVCCFLAGS += --generate-code arch=compute_110,code=sm_110
-NVCCFLAGS += --generate-code arch=compute_120,code=sm_120
-NVCCFLAGS += --generate-code arch=compute_121,code=sm_121
-NVCCFLAGS += --generate-code arch=compute_75,code=compute_75
+#
+# As in Makefile, a cubin is built for each compute capability in
+# CUDA_ARCHS_WANTED that this nvcc supports (nvcc --list-gpu-code), plus PTX
+# for the oldest one. CUDA_LEGACY_ARCHS=1 adds Maxwell, Pascal and Volta (CUDA
+# 12.x and older only); `make CUDA_ARCHS="86 89"` skips detection.
+CUDA_ARCHS_WANTED = 75 80 86 87 88 89 90 100 103 110 120 121
+CUDA_LEGACY_ARCHS = 0
+ifeq ($(CUDA_LEGACY_ARCHS), 1)
+  CUDA_ARCHS_WANTED := 50 52 53 60 61 62 70 72 $(CUDA_ARCHS_WANTED)
+endif
+ifeq ($(origin CUDA_ARCHS), undefined)
+  NVCC_GPU_CODES := $(patsubst sm_%,%,$(filter sm_%,$(shell nvcc --list-gpu-code)))
+  CUDA_ARCHS := $(filter $(NVCC_GPU_CODES),$(CUDA_ARCHS_WANTED))
+  ifeq ($(CUDA_ARCHS),)
+    CUDA_ARCHS := 75 80 86 89 90
+  endif
+endif
+NVCCFLAGS += $(foreach cc,$(CUDA_ARCHS),--generate-code arch=compute_$(cc),code=sm_$(cc))
+CUDA_PTX_ARCH = $(firstword $(CUDA_ARCHS))
+ifneq ($(CUDA_PTX_ARCH),)
+  NVCCFLAGS += --generate-code arch=compute_$(CUDA_PTX_ARCH),code=compute_$(CUDA_PTX_ARCH)
+endif
 
 ############################################################
 

@@ -7,14 +7,44 @@ DEBUG = 0
 STATIC_RUNTIME = 0
 STATIC_CUDA = 0
 
+NVCC = nvcc
+
+# toolkit release as a number, e.g. 1204 for CUDA 12.4 (empty if nvcc is not found)
+NVCC_RELEASE := $(shell $(NVCC) --version 2>/dev/null | sed -n 's/.*release \([0-9]*\)\.\([0-9]*\).*/\1 \2/p' | awk '{ printf "%d%02d", $$1, $$2 }')
+
+# newest GCC major version the toolkit accepts as host compiler; override with
+# e.g. `make NVCC_MAX_GCC=13` if your toolkit's release notes say otherwise
+ifeq ($(NVCC_RELEASE),)
+  NVCC_MAX_GCC ?= 15
+else ifeq ($(shell [ $(NVCC_RELEASE) -ge 1300 ] && echo y),y)
+  NVCC_MAX_GCC ?= 15
+else ifeq ($(shell [ $(NVCC_RELEASE) -ge 1208 ] && echo y),y)
+  NVCC_MAX_GCC ?= 14
+else ifeq ($(shell [ $(NVCC_RELEASE) -ge 1204 ] && echo y),y)
+  NVCC_MAX_GCC ?= 13
+else
+  NVCC_MAX_GCC ?= 12
+endif
+
 # compiler settings for host code. GNU make predefines CC=cc and CXX=g++, so
-# using ?= here does not actually select a CUDA-supported compiler. Prefer GCC
-# 15 when it is installed, while still allowing `make CC=... CXX=...` overrides.
+# using ?= here does not actually select a CUDA-supported compiler. Use the
+# newest versioned GCC (g++-N) the toolkit supports when one is installed, and
+# the unversioned one otherwise. `make CC=... CXX=...` overrides this.
+HOST_GCC_SUFFIX := $(shell for v in $$(seq $(NVCC_MAX_GCC) -1 9); do \
+                     if command -v g++-$$v >/dev/null 2>&1 && command -v gcc-$$v >/dev/null 2>&1; then echo -$$v; exit; fi; done)
 ifeq ($(origin CC), default)
-  CC := $(shell command -v gcc-15 2>/dev/null || command -v gcc)
+  CC := $(shell command -v gcc$(HOST_GCC_SUFFIX))
 endif
 ifeq ($(origin CXX), default)
-  CXX := $(shell command -v g++-15 2>/dev/null || command -v g++)
+  CXX := $(shell command -v g++$(HOST_GCC_SUFFIX))
+  ifeq ($(shell $(CXX) --version 2>/dev/null | grep -c clang),0)
+    HOST_GCC_MAJOR := $(shell $(CXX) -dumpversion 2>/dev/null | cut -d. -f1)
+  endif
+  ifneq ($(HOST_GCC_MAJOR),)
+    ifeq ($(shell [ $(HOST_GCC_MAJOR) -gt $(NVCC_MAX_GCC) ] && echo y),y)
+      $(warning WARNING: $(CXX) is GCC $(HOST_GCC_MAJOR), but this CUDA toolkit supports GCC $(NVCC_MAX_GCC) at most; install g++-$(NVCC_MAX_GCC) or set CC and CXX)
+    endif
+  endif
 endif
 CFLAGS = -Wall -Wextra $(CUDA_INCLUDE)
 
@@ -29,47 +59,45 @@ else
 endif
 
 # compiler settings for .cu files (GPU)
-NVCC = nvcc
 # nvcc otherwise searches PATH for its own host compiler, independently of CC
 # and CXX. Explicitly use the same supported C++ compiler selected above.
 NVCCFLAGS = $(CUDA_INCLUDE) -ccbin $(CXX) --ptxas-options=-v -Wno-deprecated-gpu-targets
 
 # generate code for compute capabilities - see this table for supported
 # versions: https://en.wikipedia.org/wiki/CUDA#GPUs_supported
-
-# older deprecated versions - uncomment to enable
+#
+# A cubin is built for each compute capability in CUDA_ARCHS_WANTED that this
+# nvcc can target (nvcc --list-gpu-code), so the same Makefile works from CUDA
+# 12.4, which predates Blackwell, to CUDA 13.x, which dropped Maxwell, Pascal
+# and Volta. Turing (7.5) is the oldest GPU both of those toolkits support.
+#
+# CUDA_LEGACY_ARCHS=1 also builds for Maxwell, Pascal and Volta; only CUDA 12.x
+# and older can do this. `make CUDA_ARCHS="86 89"` skips detection and builds
+# exactly the listed compute capabilities.
 #
 # note: mfaktc 0.24.x dropped support for compute capability 1.x GPUs - use the '0.23' branch for older devices
-# NVCCFLAGS += --generate-code arch=compute_20,code=sm_20 # Fermi GPUs
-# NVCCFLAGS += --generate-code arch=compute_30,code=sm_30 # early Kepler GPUs
-# NVCCFLAGS += --generate-code arch=compute_35,code=sm_35 # later Kepler GPUs; funnel shift added in 3.2
+CUDA_ARCHS_WANTED = 75 80 86 87 88 89 90 100 103 110 120 121
+CUDA_LEGACY_ARCHS = 0
+ifeq ($(CUDA_LEGACY_ARCHS), 1)
+  CUDA_ARCHS_WANTED := 50 52 53 60 61 62 70 72 $(CUDA_ARCHS_WANTED)
+endif
+ifeq ($(origin CUDA_ARCHS), undefined)
+  NVCC_GPU_CODES := $(patsubst sm_%,%,$(filter sm_%,$(shell $(NVCC) --list-gpu-code 2>/dev/null)))
+  CUDA_ARCHS := $(filter $(NVCC_GPU_CODES),$(CUDA_ARCHS_WANTED))
+  ifeq ($(CUDA_ARCHS),)
+    # nvcc is missing or predates --list-gpu-code
+    CUDA_ARCHS := 75 80 86 89 90
+  endif
+endif
+NVCCFLAGS += $(foreach cc,$(CUDA_ARCHS),--generate-code arch=compute_$(cc),code=sm_$(cc))
 
-# removed in CUDA 13.x - uncomment to enable
-# NVCCFLAGS += --generate-code arch=compute_50,code=sm_50 # Maxwell GPUs
-# NVCCFLAGS += --generate-code arch=compute_60,code=sm_60 # Pascal GPUs
-# NVCCFLAGS += --generate-code arch=compute_61,code=sm_61
-# NVCCFLAGS += --generate-code arch=compute_62,code=sm_62
-# NVCCFLAGS += --generate-code arch=compute_70,code=sm_70 # Volta GPUs
-# NVCCFLAGS += --generate-code arch=compute_72,code=sm_72
-
-# currently supported
-NVCCFLAGS += --generate-code arch=compute_75,code=sm_75 # Turing GPUs; slightly faster than 7.0
-NVCCFLAGS += --generate-code arch=compute_80,code=sm_80 # Ampere GPUs
-NVCCFLAGS += --generate-code arch=compute_86,code=sm_86
-NVCCFLAGS += --generate-code arch=compute_87,code=sm_87
-NVCCFLAGS += --generate-code arch=compute_88,code=sm_88
-NVCCFLAGS += --generate-code arch=compute_89,code=sm_89 # Ada Lovelace GPUs
-NVCCFLAGS += --generate-code arch=compute_90,code=sm_90 # Hopper GPUs
-NVCCFLAGS += --generate-code arch=compute_100,code=sm_100 # Blackwell data-center GPUs
-NVCCFLAGS += --generate-code arch=compute_103,code=sm_103
-NVCCFLAGS += --generate-code arch=compute_110,code=sm_110
-NVCCFLAGS += --generate-code arch=compute_120,code=sm_120 # Blackwell consumer GPUs
-NVCCFLAGS += --generate-code arch=compute_121,code=sm_121
-
-# Keep forward-compatible PTX in the fat binary for CUDA-capable devices that
-# do not have an exact cubin above.  CUDA 13.2.1 supports JIT-compiling this
-# baseline PTX for every architecture supported by mfaktc.
-NVCCFLAGS += --generate-code arch=compute_75,code=compute_75
+# Also embed PTX for the oldest architecture so that GPUs without a matching
+# cubin can JIT-compile the kernels. The driver must be at least as new as the
+# toolkit to load that PTX; mfaktc refuses to start on an older driver anyway.
+CUDA_PTX_ARCH = $(firstword $(CUDA_ARCHS))
+ifneq ($(CUDA_PTX_ARCH),)
+  NVCCFLAGS += --generate-code arch=compute_$(CUDA_PTX_ARCH),code=compute_$(CUDA_PTX_ARCH)
+endif
 
 # pass some options to the C host compiler
 ifeq ($(DEBUG), 1)
