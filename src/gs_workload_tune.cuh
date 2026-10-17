@@ -179,4 +179,9 @@ static int gs_candidate_shared_mem(const mystuff_t *mystuff, int conservative)
     }
 }
 
+static int gs_candidate_smem_fits(const mystuff_t *mystuff, int smem)
+{
+    return smem > 0 && (smem + 1024) <= mystuff->max_shared_memory_per_block && (smem + 1024) <= mystuff->max_shared_memory;
+}
+
 #endif

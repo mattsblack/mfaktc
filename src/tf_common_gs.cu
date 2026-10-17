@@ -183,6 +183,7 @@ restart_class:
 
     // Calculate the initial bit-to-clear values for this class
     gpusieve_init_class(mystuff, k_min);
+    cudaDeviceSynchronize();
 
     // Generously estimate the shared memory requirements for the TF kernel
 #ifdef RAW_GPU_BENCH
@@ -246,13 +247,11 @@ restart_class:
             if (gv->warp_local) continue; // no shared-memory candidate list
 
             // Opt in to the required dynamic shared-memory size before asking the
-            // occupancy calculator about a launch that uses it.
+            // occupancy calculator about a launch that uses it.  Some variants
+            // (e.g. two candidates per thread) cannot accept the same limit.
+            if (!gs_candidate_smem_fits(mystuff, shared_mem_required)) continue;
             cuda_ret = cudaFuncSetAttribute(gv->kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
-            if (cuda_ret != cudaSuccess) {
-                printf("ERROR: could not configure %d bytes of dynamic shared memory: %s\n", shared_mem_required,
-                       cudaGetErrorString(cuda_ret));
-                return RET_CUDA_ERROR;
-            }
+            if (cuda_ret != cudaSuccess) continue;
             cuda_ret = cudaFuncSetAttribute(gv->kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
             if (cuda_ret != cudaSuccess && mystuff->verbosity >= 2)
                 printf("WARNING: could not set the TF shared-memory carveout: %s\n", cudaGetErrorString(cuda_ret));
@@ -288,15 +287,13 @@ restart_class:
     static gs_kernel_t gs_graph_kernel = NULL;
     int need_search = 0, current_device = -1;
 
-    auto configure_smem = [&]() -> cudaError_t {
-        cudaError_t err = cudaSuccess;
-        for (int v = 0; v < num_variants && err == cudaSuccess; v++) {
-            if (MFAKTC_GS_VARIANTS[v].warp_local) continue;
-            err = cudaFuncSetAttribute(MFAKTC_GS_VARIANTS[v].kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
-            if (err == cudaSuccess)
-                cudaFuncSetAttribute(MFAKTC_GS_VARIANTS[v].kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-        }
-        cached_shared_mem_required = shared_mem_required;
+    auto configure_smem_for = [&](int v) -> cudaError_t {
+        const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[v];
+
+        if (gv->warp_local) return cudaSuccess;
+        if (!gs_candidate_smem_fits(mystuff, shared_mem_required)) return cudaErrorInvalidValue;
+        cudaError_t err = cudaFuncSetAttribute(gv->kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
+        if (err == cudaSuccess) cudaFuncSetAttribute(gv->kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
         return err;
     };
 
@@ -306,6 +303,7 @@ restart_class:
             gpusieve_rebuild_primes(mystuff);
             gpusieve_init_exponent(mystuff);
             gpusieve_init_class(mystuff, original_k_min);
+            cudaDeviceSynchronize();
         }
         mystuff->gpu_sieve_processing_size = cfg->process_size;
         mystuff->gpu_sieve_segment_size    = cfg->segment_size;
@@ -315,9 +313,9 @@ restart_class:
             mystuff->gpu_sieve_batch_size = mystuff->gpu_sieve_size;
         if (mystuff->gpu_sieve_processing_size > 0 && mystuff->gpu_sieve_batch_size % mystuff->gpu_sieve_processing_size != 0)
             mystuff->gpu_sieve_batch_size = mystuff->gpu_sieve_size;
-        shared_mem_required                = gs_candidate_shared_mem(mystuff, conservative_candidate_buffer);
-        variant                            = v;
-        return configure_smem();
+        shared_mem_required = gs_candidate_shared_mem(mystuff, conservative_candidate_buffer);
+        variant             = v;
+        return configure_smem_for(v);
     };
 
     if (mystuff->mode == MODE_NORMAL && mystuff->gpu_sieve_autotune) {
@@ -337,9 +335,13 @@ restart_class:
             if (v >= 0 && (MFAKTC_GS_VARIANTS[v].bit_max64 == 0 || MFAKTC_GS_VARIANTS[v].bit_max64 == mystuff->bit_min - 63)) {
                 cuda_ret = apply_tune_cfg(&cached, v);
                 if (cuda_ret != cudaSuccess) {
-                    printf("ERROR: could not apply the cached GPU-sieve configuration: %s\n", cudaGetErrorString(cuda_ret));
-                    return RET_CUDA_ERROR;
-                }
+                    if (mystuff->verbosity >= 1)
+                        printf("WARNING: could not apply cached GPU-sieve config (%s); re-autotuning\n",
+                               cudaGetErrorString(cuda_ret));
+                    cudaGetLastError();
+                    cuda_ret    = cudaSuccess;
+                    need_search = 1;
+                } else {
                 tuned_variant  = v;
                 tuned_device   = current_device;
                 tuned_bit_min  = mystuff->bit_min;
@@ -351,6 +353,7 @@ restart_class:
                            cached.primes, cached.process_size / 1024, cached.segment_size / 1024,
                            cached.atomic_marks ? "atomic" : "sloppy", cached.batch_size / 1024, cached.tf_threads, cached.tf_cands,
                            cached.tf_cands == 1 ? "" : "s", cached.tf_warp_local ? "warp-local" : "block");
+                }
             } else
                 need_search = 1;
         }
@@ -448,7 +451,16 @@ restart_class:
             };
             auto time_tf = [&](int v, int nblocks, int process_bits, int smem, float *ms) -> cudaError_t {
                 const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[v];
-                cudaError_t err        = cudaMemsetAsync(scratch, 0, 32 * sizeof(unsigned int), 0);
+                const int saved_smem   = shared_mem_required;
+                cudaError_t err;
+
+                if (!gs_candidate_smem_fits(mystuff, smem)) return cudaErrorInvalidValue;
+                shared_mem_required = smem;
+                err                 = configure_smem_for(v);
+                shared_mem_required = saved_smem;
+                if (err != cudaSuccess) return err;
+
+                err = cudaMemsetAsync(scratch, 0, 32 * sizeof(unsigned int), 0);
                 if (err == cudaSuccess) err = cudaEventRecord(ev0, 0);
                 if (err == cudaSuccess)
                     err = gs_launch_variant(gv, nblocks, gs_variant_shared_mem(gv, smem), 0, mystuff->exponent, k_base,
@@ -479,36 +491,51 @@ restart_class:
                 mystuff->gpu_sieve_processing_size = process_bits;
                 smem                               = gs_candidate_shared_mem(mystuff, conservative_candidate_buffer);
                 mystuff->gpu_sieve_processing_size = prev_process;
-                if (smem != shared_mem_required) {
-                    int saved          = shared_mem_required;
-                    shared_mem_required = smem;
-                    cuda_ret            = configure_smem();
-                    shared_mem_required = saved;
-                    if (cuda_ret != cudaSuccess) break;
-                }
+                if (!gs_candidate_smem_fits(mystuff, smem)) continue;
 
-                auto launch = [&](int a, unsigned int *result) {
-                    const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[applicable[a]];
+                int tune_variants[GS_MAX_VARIANTS], ntune = 0;
+                {
+                    const int saved_smem = shared_mem_required;
+
+                    shared_mem_required = smem;
+                    for (int a = 0; a < num_applicable; a++) {
+                        const int vi = applicable[a];
+                        const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[vi];
+
+                        if (gv->warp_local || configure_smem_for(vi) == cudaSuccess) tune_variants[ntune++] = vi;
+                    }
+                    shared_mem_required = saved_smem;
+                }
+                if (ntune == 0) continue;
+
+                auto launch = [&](int a, unsigned int *result) -> cudaError_t {
+                    const int vi           = tune_variants[a];
+                    const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[vi];
+                    const int saved        = shared_mem_required;
+                    cudaError_t err;
+
+                    shared_mem_required = smem;
+                    err                 = configure_smem_for(vi);
+                    shared_mem_required = saved;
+                    if (err != cudaSuccess) return err;
                     return gs_launch_variant(gv, nblocks, gs_variant_shared_mem(gv, smem), 0, mystuff->exponent, k_base,
                                              mystuff->d_bitarray[0], (unsigned int)process_bits, shiftcount, b_preinit, result,
                                              mystuff->bit_min - 63);
                 };
                 int fastest = 0;
-                cuda_ret    = mfaktc_time_variants(num_applicable, launch, &fastest);
+                cuda_ret    = mfaktc_time_variants(ntune, launch, &fastest);
                 if (cuda_ret != cudaSuccess) break;
-                cuda_ret = time_tf(applicable[fastest], nblocks, process_bits, smem, &elapsed);
+                cuda_ret = time_tf(tune_variants[fastest], nblocks, process_bits, smem, &elapsed);
                 if (cuda_ret != cudaSuccess) break;
                 elapsed += sieve_ms;
                 if (elapsed < best_ms) {
                     best_ms           = elapsed;
                     best.process_size = process_bits;
-                    gs_tune_from_variant(&best, &MFAKTC_GS_VARIANTS[applicable[fastest]]);
-                    variant = applicable[fastest];
+                    gs_tune_from_variant(&best, &MFAKTC_GS_VARIANTS[tune_variants[fastest]]);
+                    variant = tune_variants[fastest];
                 }
             }
             mystuff->gpu_sieve_processing_size = best.process_size;
-            shared_mem_required                = gs_candidate_shared_mem(mystuff, conservative_candidate_buffer);
-            if (cuda_ret == cudaSuccess) cuda_ret = configure_smem();
 
             int seg_cands[] = { 64 * 1024, 128 * 1024, 256 * 1024 };
             for (int s = 0; s < 3 && cuda_ret == cudaSuccess; s++) {
@@ -546,14 +573,10 @@ restart_class:
                 if (ntried_primes < 8) tried_primes[ntried_primes++] = rounded;
                 gpusieve_init_exponent(mystuff);
                 gpusieve_init_class(mystuff, original_k_min);
+                cudaDeviceSynchronize();
                 float s_ms = 0.0f, t_ms = 0.0f;
                 int smem = gs_candidate_shared_mem(mystuff, conservative_candidate_buffer);
-                if (smem != shared_mem_required) {
-                    int saved           = shared_mem_required;
-                    shared_mem_required = smem;
-                    cuda_ret            = configure_smem();
-                    shared_mem_required = saved;
-                }
+                if (!gs_candidate_smem_fits(mystuff, smem)) continue;
                 if (cuda_ret == cudaSuccess) cuda_ret = time_sieve(mystuff->gpu_sieve_size, &s_ms);
                 if (cuda_ret == cudaSuccess)
                     cuda_ret = time_tf(variant, mystuff->gpu_sieve_size / best.process_size, best.process_size, smem, &t_ms);
@@ -567,6 +590,7 @@ restart_class:
             gpusieve_rebuild_primes(mystuff);
             gpusieve_init_exponent(mystuff);
             gpusieve_init_class(mystuff, original_k_min);
+            cudaDeviceSynchronize();
             mystuff->gpu_sieve_segment_size = best.segment_size;
             mystuff->gpu_sieve_atomic_marks = best.atomic_marks;
 
@@ -599,23 +623,40 @@ restart_class:
             if (ev0) cudaEventDestroy(ev0);
             if (scratch) cudaFree(scratch);
             if (cuda_ret != cudaSuccess) {
-                printf("ERROR: GPU-sieve autotune failed: %s\n", cudaGetErrorString(cuda_ret));
-                return RET_CUDA_ERROR;
+                const cudaError_t tune_err = cuda_ret;
+
+                mystuff->gpu_sieve_primes          = save_primes;
+                mystuff->gpu_sieve_processing_size = save_process;
+                mystuff->gpu_sieve_segment_size    = save_segment;
+                mystuff->gpu_sieve_atomic_marks    = save_atomic;
+                mystuff->gpu_sieve_batch_size      = save_batch;
+                shared_mem_required                = save_smem;
+                gpusieve_rebuild_primes(mystuff);
+                gpusieve_init_exponent(mystuff);
+                gpusieve_init_class(mystuff, original_k_min);
+                cudaDeviceSynchronize();
+                variant = occupancy_variant;
+                configure_smem_for(variant);
+                if (mystuff->verbosity >= 1)
+                    printf("WARNING: GPU-sieve autotune failed (%s); using INI settings\n", cudaGetErrorString(tune_err));
+                cudaGetLastError();
+                cuda_ret = cudaSuccess;
+            } else {
+                tuned_variant  = variant;
+                tuned_device   = current_device;
+                tuned_bit_min  = mystuff->bit_min;
+                tuned_cat      = gs_exp_category(mystuff->exponent);
+                tuned_exponent = mystuff->exponent;
+                gs_tune_from_variant(&best, &MFAKTC_GS_VARIANTS[variant]);
+                gs_tune_cache_save(MFAKTC_GS_FAMILY, mystuff->bit_min, mystuff->exponent, &best);
+                if (mystuff->verbosity >= 1)
+                    printf("GPU-sieve autotune: %d primes, process %d Kib, segment %d Kib, %s marks, batch %d Kib, "
+                           "%d threads, %d candidate%s/thread, %s list (%.1f ms / %d Mib)\n",
+                           best.primes, best.process_size / 1024, best.segment_size / 1024, best.atomic_marks ? "atomic" : "sloppy",
+                           best.batch_size / 1024, best.tf_threads, best.tf_cands, best.tf_cands == 1 ? "" : "s",
+                           best.tf_warp_local ? "warp-local" : "block", best_ms, mystuff->gpu_sieve_size / (1024 * 1024));
             }
-            tuned_variant  = variant;
-            tuned_device   = current_device;
-            tuned_bit_min  = mystuff->bit_min;
-            tuned_cat      = gs_exp_category(mystuff->exponent);
-            tuned_exponent = mystuff->exponent;
-            need_search    = 0;
-            gs_tune_from_variant(&best, &MFAKTC_GS_VARIANTS[variant]);
-            gs_tune_cache_save(MFAKTC_GS_FAMILY, mystuff->bit_min, mystuff->exponent, &best);
-            if (mystuff->verbosity >= 1)
-                printf("GPU-sieve autotune: %d primes, process %d Kib, segment %d Kib, %s marks, batch %d Kib, "
-                       "%d threads, %d candidate%s/thread, %s list (%.1f ms / %d Mib)\n",
-                       best.primes, best.process_size / 1024, best.segment_size / 1024, best.atomic_marks ? "atomic" : "sloppy",
-                       best.batch_size / 1024, best.tf_threads, best.tf_cands, best.tf_cands == 1 ? "" : "s",
-                       best.tf_warp_local ? "warp-local" : "block", best_ms, mystuff->gpu_sieve_size / (1024 * 1024));
+            need_search = 0;
             k_remaining = ((k_max - k_min + 1) + NUM_CLASSES - 1) / NUM_CLASSES;
             if (k_remaining < (unsigned long long)mystuff->gpu_sieve_batch_size) {
                 numblocks   = ((int)k_remaining + mystuff->gpu_sieve_processing_size - 1) / mystuff->gpu_sieve_processing_size;
