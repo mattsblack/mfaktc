@@ -366,45 +366,77 @@ DEFINE_GS_TEST(76, )
 /* Separate launch-bound variants let NVCC choose an independent register
    budget and schedule for each block size, and with two candidates per thread
    each thread has two independent modular exponentiations to interleave, at
-   the cost of more registers.  BIT_MAX64 != 0 compiles a kernel for that one
-   factor size (bit_max64 is then ignored).  The host times the variants and
-   keeps the fastest.  The 76/77/79-bit variants accept bit_max64 but don't use
-   it, so all variants share one launch signature (gs_kernel_t). */
-template <int BITS, int THREADS, int CANDS, int BIT_MAX64>
+   the cost of more registers.  WARP_LOCAL kernels take their candidates
+   straight from the sieve words held by each warp instead of a block-wide
+   list in shared memory; they are launched without dynamic shared memory.
+   BIT_MAX64 != 0 compiles a kernel for that one factor size (bit_max64 is
+   then ignored).  The host times the variants and keeps the fastest.  The
+   76/77/79-bit variants accept bit_max64 but don't use it, so all variants
+   share one launch signature (gs_kernel_t). */
+template <int BITS, int THREADS, int CANDS, int WARP_LOCAL, int BIT_MAX64>
 __global__ void __launch_bounds__(THREADS, KERNEL_MIN_BLOCKS)
     mfaktc_barrett_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array, unsigned int bits_to_process,
                       int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)
 {
     int96 f[CANDS], f_base;
     int valid[CANDS];
-    int i, total_bit_count;
     unsigned int initial_shifter_value;
-    extern __shared__ unsigned short k_deltas[];
 
-    create_k_deltas(bit_array, bits_to_process, &total_bit_count, k_deltas, RES);
-    create_fbase96(&f_base, k_base, exp, bits_to_process);
-    initial_shifter_value = exp << (32 - shiftcount);
+    if (BIT_MAX64) bit_max64 = BIT_MAX64;
 
-    for (i = threadIdx.x; i < total_bit_count; i += CANDS * blockDim.x) {
+    if (WARP_LOCAL) {
+        const int MAXW = GPU_SIEVE_PROCESS_SIZE_MAX * 1024 / (32 * THREADS);
+        unsigned int w[MAXW], excl, total, first_word;
+        const unsigned int lane = threadIdx.x & (warpSize - 1);
+
+        warp_load_sieve_words<MAXW>(bit_array, bits_to_process, w, &excl, &total, &first_word);
+        create_fbase96(&f_base, k_base, exp, bits_to_process);
+        initial_shifter_value = exp << (32 - shiftcount);
+
+        // total is the same in all lanes, so the whole warp runs every round
+        for (unsigned int base = 0; base < total; base += CANDS * warpSize) {
 #pragma unroll
-        for (int c = 0; c < CANDS; c++) {
-            // a slot past the last candidate repeats this thread's first one, but doesn't report it
-            const int index   = i + c * blockDim.x;
-            valid[c]          = index < total_bit_count;
-            const int k_delta = k_deltas[valid[c] ? index : i];
-            f[c].d0           = __add_cc(f_base.d0, __umul32(2 * k_delta * NUM_CLASSES, exp));
-            f[c].d1           = __addc_cc(f_base.d1, __umul32hi(2 * k_delta * NUM_CLASSES, exp));
-            f[c].d2           = __addc(f_base.d2, 0);
+            for (int c = 0; c < CANDS; c++) {
+                // ranks past the slice's last candidate repeat the round's first one, but don't report it
+                const unsigned int rank = base + c * warpSize + lane;
+                valid[c]                = rank < total;
+                const int k_delta       = warp_candidate_offset<MAXW>(w, excl, first_word, valid[c] ? rank : base);
+                f[c].d0                 = __add_cc(f_base.d0, __umul32(2 * k_delta * NUM_CLASSES, exp));
+                f[c].d1                 = __addc_cc(f_base.d1, __umul32hi(2 * k_delta * NUM_CLASSES, exp));
+                f[c].d2                 = __addc(f_base.d2, 0);
+            }
+            gs_test<BITS, CANDS, BIT_MAX64>::run(f, valid, b_preinit, initial_shifter_value, RES, bit_max64);
         }
-        gs_test<BITS, CANDS, BIT_MAX64>::run(f, valid, b_preinit, initial_shifter_value, RES, BIT_MAX64 ? BIT_MAX64 : bit_max64);
+    } else {
+        int i, total_bit_count;
+        extern __shared__ unsigned short k_deltas[];
+
+        create_k_deltas(bit_array, bits_to_process, &total_bit_count, k_deltas, RES);
+        create_fbase96(&f_base, k_base, exp, bits_to_process);
+        initial_shifter_value = exp << (32 - shiftcount);
+
+        for (i = threadIdx.x; i < total_bit_count; i += CANDS * blockDim.x) {
+#pragma unroll
+            for (int c = 0; c < CANDS; c++) {
+                // a slot past the last candidate repeats this thread's first one, but doesn't report it
+                const int index   = i + c * blockDim.x;
+                valid[c]          = index < total_bit_count;
+                const int k_delta = k_deltas[valid[c] ? index : i];
+                f[c].d0           = __add_cc(f_base.d0, __umul32(2 * k_delta * NUM_CLASSES, exp));
+                f[c].d1           = __addc_cc(f_base.d1, __umul32hi(2 * k_delta * NUM_CLASSES, exp));
+                f[c].d2           = __addc(f_base.d2, 0);
+            }
+            gs_test<BITS, CANDS, BIT_MAX64>::run(f, valid, b_preinit, initial_shifter_value, RES, bit_max64);
+        }
     }
 }
 
-#define GS_VARIANT(BITS, THREADS, CANDS, BIT_MAX64)                                                                                \
-    { mfaktc_barrett_gs<BITS, THREADS, CANDS, BIT_MAX64>, THREADS, CANDS, BIT_MAX64 }
+#define GS_VARIANT(BITS, THREADS, CANDS, WARP_LOCAL, BIT_MAX64)                                                                    \
+    { mfaktc_barrett_gs<BITS, THREADS, CANDS, WARP_LOCAL, BIT_MAX64>, THREADS, CANDS, WARP_LOCAL, BIT_MAX64 }
 #define GS_GENERIC_VARIANTS(BITS)                                                                                                  \
-    GS_VARIANT(BITS, 256, 1, 0), GS_VARIANT(BITS, 128, 1, 0), GS_VARIANT(BITS, 256, 2, 0), GS_VARIANT(BITS, 128, 2, 0)
-#define GS_BIT_LEVEL_VARIANTS(BITS, BIT_MAX64) GS_VARIANT(BITS, 256, 1, BIT_MAX64), GS_VARIANT(BITS, 128, 1, BIT_MAX64)
+    GS_VARIANT(BITS, 256, 1, 0, 0), GS_VARIANT(BITS, 128, 1, 0, 0), GS_VARIANT(BITS, 256, 2, 0, 0), GS_VARIANT(BITS, 128, 2, 0, 0), \
+        GS_VARIANT(BITS, 256, 1, 1, 0), GS_VARIANT(BITS, 128, 1, 1, 0), GS_VARIANT(BITS, 256, 2, 1, 0), GS_VARIANT(BITS, 128, 2, 1, 0)
+#define GS_BIT_LEVEL_VARIANTS(BITS, BIT_MAX64) GS_VARIANT(BITS, 256, 1, 0, BIT_MAX64), GS_VARIANT(BITS, 128, 1, 0, BIT_MAX64)
 
 /* Bit-level kernels exist for the factor sizes the automatic kernel selection
    most often gives each of the 87-, 88- and 92-bit kernels: 2^77 to 2^84,

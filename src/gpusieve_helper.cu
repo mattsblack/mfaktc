@@ -102,6 +102,114 @@ __device__ static void create_k_deltas(const unsigned int *__restrict__ bit_arra
     // Now we can start TFing candidates.
 }
 
+/*
+Warp-local candidate extraction, an alternative to create_k_deltas() that
+needs no shared memory and no block-wide synchronization. Each warp owns a
+contiguous slice of its block's sieve words and keeps it in registers: lane L
+holds words L, L + 32, L + 64, ... of the slice (coalesced loads). The
+surviving candidates of the slice are numbered 0 .. total - 1 in lane order,
+and warp_candidate_offset() finds the sieve bit of any of them, so the lanes
+of a warp can take 32 consecutive candidates per round, keeping the warp full
+until the slice's last round.
+
+MAXW is the most words per lane: launches must use the block size the kernel
+was compiled for.
+*/
+
+// position of the n-th (from 0) set bit of w, which has more than n set bits
+__device__ static unsigned int nth_set_bit(unsigned int w, unsigned int n)
+{
+    unsigned int pos = 0, c;
+
+    c = __popc(w & 0xFFFF);
+    if (n >= c) {
+        n -= c;
+        pos += 16;
+        w >>= 16;
+    }
+    c = __popc(w & 0xFF);
+    if (n >= c) {
+        n -= c;
+        pos += 8;
+        w >>= 8;
+    }
+    c = __popc(w & 0xF);
+    if (n >= c) {
+        n -= c;
+        pos += 4;
+        w >>= 4;
+    }
+    c = __popc(w & 0x3);
+    if (n >= c) {
+        n -= c;
+        pos += 2;
+        w >>= 2;
+    }
+    if (n >= (w & 1)) pos += 1;
+    return pos;
+}
+
+/* Loads the warp's slice and returns, for this lane, the number of candidates
+   in lower lanes (*excl), the slice's candidate count (*total) and the
+   slice's first word within the block (*first_word). */
+template <int MAXW>
+__device__ static void warp_load_sieve_words(const unsigned int *__restrict__ bit_array, unsigned int bits_to_process, unsigned int *w,
+                                             unsigned int *excl, unsigned int *total, unsigned int *first_word)
+{
+    const unsigned int lane           = threadIdx.x & (warpSize - 1);
+    const unsigned int warp           = threadIdx.x / warpSize;
+    const unsigned int words_per_warp = bits_to_process / 32 / (blockDim.x / warpSize); // a multiple of 32
+    const unsigned int words_per_lane = words_per_warp / warpSize;
+    unsigned int count                = 0, inclusive;
+
+    *first_word = warp * words_per_warp;
+    bit_array += blockIdx.x * (bits_to_process / 32) + *first_word;
+#pragma unroll
+    for (int j = 0; j < MAXW; j++) {
+        w[j] = (unsigned int)j < words_per_lane ? bit_array[j * warpSize + lane] : 0;
+        count += __popc(w[j]);
+    }
+
+    inclusive = count;
+    for (unsigned int offset = 1; offset < warpSize; offset <<= 1) {
+        unsigned int value = __shfl_up_sync(0xFFFFFFFFU, inclusive, offset);
+        if (lane >= offset) inclusive += value;
+    }
+    *total = __shfl_sync(0xFFFFFFFFU, inclusive, warpSize - 1);
+    *excl  = inclusive - count;
+}
+
+/* Returns the bit offset within the block of the slice's candidate number
+   rank (< total).  All lanes of the warp must call this together; each may
+   ask for a different rank. */
+template <int MAXW>
+__device__ static unsigned int warp_candidate_offset(const unsigned int *w, unsigned int excl, unsigned int first_word, unsigned int rank)
+{
+    unsigned int src = 0, n, bits = 0, word = 0;
+    int found = 0;
+
+    // the candidate is in the last lane with no more than rank candidates in lower lanes
+#pragma unroll
+    for (unsigned int step = 16; step > 0; step >>= 1)
+        if (__shfl_sync(0xFFFFFFFFU, excl, src + step) <= rank) src += step;
+
+    n = rank - __shfl_sync(0xFFFFFFFFU, excl, src);
+#pragma unroll
+    for (int j = 0; j < MAXW; j++) {
+        const unsigned int x = __shfl_sync(0xFFFFFFFFU, w[j], src);
+        const unsigned int c = __popc(x);
+        if (!found) {
+            if (n < c) {
+                bits  = x;
+                word  = j;
+                found = 1;
+            } else
+                n -= c;
+        }
+    }
+    return ((first_word + word * warpSize + src) << 5) + nth_set_bit(bits, n);
+}
+
 __device__ static void create_fbase96(int96 *f_base, int96 k_base, unsigned int exp, unsigned int bits_to_process)
 {
     // Compute factor corresponding to first sieve bit in this block.

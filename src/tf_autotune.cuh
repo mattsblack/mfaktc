@@ -28,10 +28,16 @@ typedef void (*gs_kernel_t)(unsigned int exp, int96 k_base, const unsigned int *
 
 typedef struct {
     gs_kernel_t kernel;
-    int threads;   /* block size the kernel was compiled for */
-    int cands;     /* factor candidates each thread tests at once */
-    int bit_max64; /* 0, or the only bit_max64 the kernel was compiled for */
+    int threads;    /* block size the kernel was compiled for */
+    int cands;      /* factor candidates each thread tests at once */
+    int warp_local; /* 1: warp-local candidate extraction, no dynamic shared memory */
+    int bit_max64;  /* 0, or the only bit_max64 the kernel was compiled for */
 } gs_variant_t;
+
+static size_t gs_variant_shared_mem(const gs_variant_t *variant, int shared_mem_required)
+{
+    return variant->warp_local ? 0 : (size_t)shared_mem_required;
+}
 
 /* Lists the variants that can run with this bit_max64 (all generic ones and
    those compiled for it) in applicable[] and returns their number. */

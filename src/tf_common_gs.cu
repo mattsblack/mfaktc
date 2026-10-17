@@ -218,6 +218,8 @@ restart_class:
             const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[v];
             int active_blocks      = 0;
 
+            if (gv->warp_local) continue; // no shared-memory candidate list
+
             // Opt in to the required dynamic shared-memory size before asking the
             // occupancy calculator about a launch that uses it.
             cuda_ret = cudaFuncSetAttribute(gv->kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
@@ -339,8 +341,9 @@ restart_class:
         } else if (numblocks == mystuff->gpu_sieve_size / mystuff->gpu_sieve_processing_size) {
             // Only a full batch is a representative sample; short batches keep the occupancy-based choice.
             auto launch = [&](int a, unsigned int *result) {
-                return gs_launch_variant(&MFAKTC_GS_VARIANTS[applicable[a]], numblocks, shared_mem_required, 0, mystuff->exponent,
-                                         k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, result,
+                const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[applicable[a]];
+                return gs_launch_variant(gv, numblocks, gs_variant_shared_mem(gv, shared_mem_required), 0, mystuff->exponent, k_base,
+                                         mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, result,
                                          mystuff->bit_min - 63);
             };
             int fastest = 0;
@@ -357,9 +360,9 @@ restart_class:
             tuned_bit_min      = mystuff->bit_min;
             variant            = tuned_variant;
             if (mystuff->verbosity >= 2)
-                printf("Timed TF launch selection: %d threads/block, %d candidate%s/thread, %s kernel\n",
+                printf("Timed TF launch selection: %d threads/block, %d candidate%s/thread, %s candidate list, %s kernel\n",
                        MFAKTC_GS_VARIANTS[variant].threads, MFAKTC_GS_VARIANTS[variant].cands,
-                       MFAKTC_GS_VARIANTS[variant].cands == 1 ? "" : "s",
+                       MFAKTC_GS_VARIANTS[variant].cands == 1 ? "" : "s", MFAKTC_GS_VARIANTS[variant].warp_local ? "warp-local" : "block",
                        MFAKTC_GS_VARIANTS[variant].bit_max64 ? "bit-level" : "generic");
         }
 #endif
@@ -368,9 +371,10 @@ restart_class:
 
         gs_timing_record(&gs_class_timing, GS_EV_TF_START, 0);
 #ifdef MFAKTC_GS_VARIANTS
-        cuda_ret = gs_launch_variant(&MFAKTC_GS_VARIANTS[variant], numblocks, shared_mem_required, 0, mystuff->exponent, k_base,
-                                     mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, mystuff->d_RES,
-                                     mystuff->bit_min - 63);
+        cuda_ret = gs_launch_variant(&MFAKTC_GS_VARIANTS[variant], numblocks,
+                                     gs_variant_shared_mem(&MFAKTC_GS_VARIANTS[variant], shared_mem_required), 0, mystuff->exponent,
+                                     k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
+                                     mystuff->d_RES, mystuff->bit_min - 63);
         if (cuda_ret != cudaSuccess) {
             printf("ERROR: TF kernel launch failed: %s\n", cudaGetErrorString(cuda_ret));
             return RET_CUDA_ERROR;
