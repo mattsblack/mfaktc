@@ -330,20 +330,23 @@ a is precomputed on host ONCE.
 #ifndef DEBUG_GPU_MATH
 #include "tf_barrett96_core_multi.cu"
 
-/* gs_test<BITS, CANDS>::run() tests CANDS candidates with the BITS-bit Barrett
-   code.  One candidate per thread uses the original test_FC96_barrettXX(). */
-template <int BITS, int CANDS> struct gs_test;
+/* gs_test<BITS, CANDS, BIT_MAX64>::run() tests CANDS candidates with the
+   BITS-bit Barrett code.  The generic one-candidate kernels use the original
+   test_FC96_barrettXX(); all others use the force-inlined
+   test_FC96_barrettXX_n(), so that a compile-time bit_max64 is folded into the
+   shifts and constants of the arithmetic. */
+template <int BITS, int CANDS, int BIT_MAX64> struct gs_test;
 
 #define GS_BIT_MAX_ARG , bit_max64
 #define DEFINE_GS_TEST(BITS, BIT_MAX_ARG)                                                                                          \
-    template <int CANDS> struct gs_test<BITS, CANDS> {                                                                             \
+    template <int CANDS, int BIT_MAX64> struct gs_test<BITS, CANDS, BIT_MAX64> {                                                   \
         __device__ static __forceinline__ void run(const int96 *f, const int *valid, int192 b, unsigned int shifter, unsigned int *RES, \
                                                    int bit_max64)                                                                  \
         {                                                                                                                          \
             test_FC96_barrett##BITS##_n<CANDS>(f, valid, b, shifter, RES BIT_MAX_ARG);                                             \
         }                                                                                                                          \
     };                                                                                                                             \
-    template <> struct gs_test<BITS, 1> {                                                                                          \
+    template <> struct gs_test<BITS, 1, 0> {                                                                                       \
         __device__ static __forceinline__ void run(const int96 *f, const int *valid, int192 b, unsigned int shifter, unsigned int *RES, \
                                                    int bit_max64)                                                                  \
         {                                                                                                                          \
@@ -363,10 +366,11 @@ DEFINE_GS_TEST(76, )
 /* Separate launch-bound variants let NVCC choose an independent register
    budget and schedule for each block size, and with two candidates per thread
    each thread has two independent modular exponentiations to interleave, at
-   the cost of more registers.  The host times the variants and keeps the
-   fastest.  The 76/77/79-bit variants accept bit_max64 but don't use it, so all
-   variants share one launch signature (gs_kernel_t). */
-template <int BITS, int THREADS, int CANDS>
+   the cost of more registers.  BIT_MAX64 != 0 compiles a kernel for that one
+   factor size (bit_max64 is then ignored).  The host times the variants and
+   keeps the fastest.  The 76/77/79-bit variants accept bit_max64 but don't use
+   it, so all variants share one launch signature (gs_kernel_t). */
+template <int BITS, int THREADS, int CANDS, int BIT_MAX64>
 __global__ void __launch_bounds__(THREADS, KERNEL_MIN_BLOCKS)
     mfaktc_barrett_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array, unsigned int bits_to_process,
                       int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)
@@ -392,21 +396,34 @@ __global__ void __launch_bounds__(THREADS, KERNEL_MIN_BLOCKS)
             f[c].d1           = __addc_cc(f_base.d1, __umul32hi(2 * k_delta * NUM_CLASSES, exp));
             f[c].d2           = __addc(f_base.d2, 0);
         }
-        gs_test<BITS, CANDS>::run(f, valid, b_preinit, initial_shifter_value, RES, bit_max64);
+        gs_test<BITS, CANDS, BIT_MAX64>::run(f, valid, b_preinit, initial_shifter_value, RES, BIT_MAX64 ? BIT_MAX64 : bit_max64);
     }
 }
 
-#define GS_VARIANT(BITS, THREADS, CANDS) { mfaktc_barrett_gs<BITS, THREADS, CANDS>, THREADS, CANDS }
-#define GS_VARIANTS(BITS)                                                                                                          \
-    { GS_VARIANT(BITS, 256, 1), GS_VARIANT(BITS, 128, 1), GS_VARIANT(BITS, 256, 2), GS_VARIANT(BITS, 128, 2) }
+#define GS_VARIANT(BITS, THREADS, CANDS, BIT_MAX64)                                                                                \
+    { mfaktc_barrett_gs<BITS, THREADS, CANDS, BIT_MAX64>, THREADS, CANDS, BIT_MAX64 }
+#define GS_GENERIC_VARIANTS(BITS)                                                                                                  \
+    GS_VARIANT(BITS, 256, 1, 0), GS_VARIANT(BITS, 128, 1, 0), GS_VARIANT(BITS, 256, 2, 0), GS_VARIANT(BITS, 128, 2, 0)
+#define GS_BIT_LEVEL_VARIANTS(BITS, BIT_MAX64) GS_VARIANT(BITS, 256, 1, BIT_MAX64), GS_VARIANT(BITS, 128, 1, BIT_MAX64)
 
-static const gs_variant_t gs_variants_barrett92[] = GS_VARIANTS(92);
-static const gs_variant_t gs_variants_barrett88[] = GS_VARIANTS(88);
-static const gs_variant_t gs_variants_barrett87[] = GS_VARIANTS(87);
-static const gs_variant_t gs_variants_barrett79[] = GS_VARIANTS(79);
-static const gs_variant_t gs_variants_barrett77[] = GS_VARIANTS(77);
-static const gs_variant_t gs_variants_barrett76[] = GS_VARIANTS(76);
-#undef GS_VARIANTS
+/* Bit-level kernels exist for the factor sizes the automatic kernel selection
+   most often gives each of the 87-, 88- and 92-bit kernels: 2^77 to 2^84,
+   2^88 and 2^89 to 2^92.  Other sizes use the generic variants. */
+static const gs_variant_t gs_variants_barrett92[] = {
+    GS_GENERIC_VARIANTS(92),       GS_BIT_LEVEL_VARIANTS(92, 25), GS_BIT_LEVEL_VARIANTS(92, 26),
+    GS_BIT_LEVEL_VARIANTS(92, 27), GS_BIT_LEVEL_VARIANTS(92, 28),
+};
+static const gs_variant_t gs_variants_barrett88[] = { GS_GENERIC_VARIANTS(88), GS_BIT_LEVEL_VARIANTS(88, 24) };
+static const gs_variant_t gs_variants_barrett87[] = {
+    GS_GENERIC_VARIANTS(87),       GS_BIT_LEVEL_VARIANTS(87, 13), GS_BIT_LEVEL_VARIANTS(87, 14), GS_BIT_LEVEL_VARIANTS(87, 15),
+    GS_BIT_LEVEL_VARIANTS(87, 16), GS_BIT_LEVEL_VARIANTS(87, 17), GS_BIT_LEVEL_VARIANTS(87, 18), GS_BIT_LEVEL_VARIANTS(87, 19),
+    GS_BIT_LEVEL_VARIANTS(87, 20),
+};
+static const gs_variant_t gs_variants_barrett79[] = { GS_GENERIC_VARIANTS(79) };
+static const gs_variant_t gs_variants_barrett77[] = { GS_GENERIC_VARIANTS(77) };
+static const gs_variant_t gs_variants_barrett76[] = { GS_GENERIC_VARIANTS(76) };
+#undef GS_BIT_LEVEL_VARIANTS
+#undef GS_GENERIC_VARIANTS
 #undef GS_VARIANT
 #endif
 

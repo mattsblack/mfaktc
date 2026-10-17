@@ -20,17 +20,29 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <cuda_runtime.h>
 
+#define GS_MAX_VARIANTS 64
+
 /* Every timed variant of a GPU-sieve Barrett kernel has this signature. */
 typedef void (*gs_kernel_t)(unsigned int exp, int96 k_base, const unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
                             int192 b_preinit, unsigned int *RES, int bit_max64);
 
 typedef struct {
     gs_kernel_t kernel;
-    int threads; /* block size the kernel was compiled for */
-    int cands;   /* factor candidates each thread tests at once */
+    int threads;   /* block size the kernel was compiled for */
+    int cands;     /* factor candidates each thread tests at once */
+    int bit_max64; /* 0, or the only bit_max64 the kernel was compiled for */
 } gs_variant_t;
 
-#define GS_MAX_VARIANTS 64
+/* Lists the variants that can run with this bit_max64 (all generic ones and
+   those compiled for it) in applicable[] and returns their number. */
+static int gs_applicable_variants(const gs_variant_t *variants, int count, int bit_max64, int *applicable)
+{
+    int n = 0;
+
+    for (int v = 0; v < count && n < GS_MAX_VARIANTS; v++)
+        if (variants[v].bit_max64 == 0 || variants[v].bit_max64 == bit_max64) applicable[n++] = v;
+    return n;
+}
 
 static cudaError_t gs_launch_variant(const gs_variant_t *variant, int numblocks, size_t shared_mem, cudaStream_t stream, unsigned int exp,
                                      int96 k_base, const unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
