@@ -1330,13 +1330,26 @@ extern "C" __host__ void gpusieve_init(mystuff_t *mystuff)
         printf("WARNING: could not set the SegSieve shared-memory carveout\n");
     }
 
-    // Allocate the configured big sieve array.
-    checkCudaErrors(cudaMalloc((void **)&mystuff->d_bitarray, mystuff->gpu_sieve_size / 8));
+    // Allocate the configured big sieve array.  A second copy lets sieving of
+    // the next batch overlap trial factoring of the current one.
+    checkCudaErrors(cudaMalloc((void **)&mystuff->d_bitarray[0], mystuff->gpu_sieve_size / 8));
+    mystuff->d_bitarray[1] = NULL;
+    if (mystuff->gpu_sieve_pipeline) {
+        checkCudaErrors(cudaMalloc((void **)&mystuff->d_bitarray[1], mystuff->gpu_sieve_size / 8));
+        checkCudaErrors(cudaStreamCreate(&mystuff->gs_sieve_stream));
+        checkCudaErrors(cudaStreamCreate(&mystuff->gs_tf_stream));
+        for (int b = 0; b < 2; b++) {
+            checkCudaErrors(cudaEventCreateWithFlags(&mystuff->gs_sieve_done[b], cudaEventDisableTiming));
+            checkCudaErrors(cudaEventCreateWithFlags(&mystuff->gs_tf_done[b], cudaEventDisableTiming));
+        }
+    }
 
 #ifdef RAW_GPU_BENCH
     // Quick hack to eliminate sieve time from GPU-code benchmarks.  Can also be used
     // to isolate a bug by eliminating the GPU sieving code as a possible cause.
-    checkCudaErrors(cudaMemset(mystuff->d_bitarray, 0xFF, mystuff->gpu_sieve_size / 8));
+    checkCudaErrors(cudaMemset(mystuff->d_bitarray[0], 0xFF, mystuff->gpu_sieve_size / 8));
+    if (mystuff->d_bitarray[1])
+        checkCudaErrors(cudaMemset(mystuff->d_bitarray[1], 0xFF, mystuff->gpu_sieve_size / 8));
 #endif
 
     gpusieve_rebuild_primes(mystuff);
@@ -1694,13 +1707,11 @@ void gpusieve_init_exponent(mystuff_t *mystuff)
 
 // GPU sieve initialization that needs to be done once for each class to be factored.
 
-void gpusieve_init_class(mystuff_t *mystuff, unsigned long long k_min)
+void gpusieve_init_class_on(mystuff_t *mystuff, unsigned long long k_min, cudaStream_t stream)
 {
     int96 k_base;
 
 #ifdef RAW_GPU_BENCH
-    // Quick hack (leave bit array set to all ones) to eliminate sieve time from GPU-code benchmarks.
-    // Can also be used to isolate a bug by eliminating the GPU sieving code as a possible cause.
     return;
 #endif
 
@@ -1708,58 +1719,88 @@ void gpusieve_init_class(mystuff_t *mystuff, unsigned long long k_min)
     k_base.d1 = (int)(k_min >> 32);
     k_base.d2 = 0;
 
-    // Calculate the initial bit-to-clear for each prime
-    CalcBitToClear<<<primes_per_thread + 1, threadsPerBlock>>>(mystuff->exponent, k_base, (int *)mystuff->d_calc_bit_to_clear_info,
-                                                                 (uint8 *)mystuff->d_sieve_info);
+    CalcBitToClear<<<primes_per_thread + 1, threadsPerBlock, 0, stream>>>(mystuff->exponent, k_base,
+                                                                          (int *)mystuff->d_calc_bit_to_clear_info,
+                                                                          (uint8 *)mystuff->d_sieve_info);
 }
 
-void gpusieve_advance_class(mystuff_t *mystuff, unsigned int bits_advanced)
+void gpusieve_init_class(mystuff_t *mystuff, unsigned long long k_min)
+{
+    gpusieve_init_class_on(mystuff, k_min, 0);
+}
+
+void gpusieve_advance_class_on(mystuff_t *mystuff, unsigned int bits_advanced, cudaStream_t stream)
 {
 #ifdef RAW_GPU_BENCH
     return;
 #endif
 
-    AdvanceBitToClear<<<primes_per_thread + 1, threadsPerBlock>>>(bits_advanced, (int *)mystuff->d_calc_bit_to_clear_info,
-                                                                  (uint8 *)mystuff->d_sieve_info);
+    AdvanceBitToClear<<<primes_per_thread + 1, threadsPerBlock, 0, stream>>>(bits_advanced, (int *)mystuff->d_calc_bit_to_clear_info,
+                                                                            (uint8 *)mystuff->d_sieve_info);
 }
 
-// GPU sieve the next chunk
+void gpusieve_advance_class(mystuff_t *mystuff, unsigned int bits_advanced)
+{
+    gpusieve_advance_class_on(mystuff, bits_advanced, 0);
+}
 
-template <uint32 BLOCK_BYTES> static void launch_SegSieve(mystuff_t *mystuff, int sieve_size)
+template <uint32 BLOCK_BYTES>
+static void launch_SegSieve(mystuff_t *mystuff, int sieve_size, cudaStream_t stream, uint8 *bitarray)
 {
     const uint32 block_size = BLOCK_BYTES * 8;
     const uint32 num_blocks = (sieve_size + block_size - 1) / block_size;
 
     if (mystuff->gpu_sieve_atomic_marks)
-        SegSieve<BLOCK_BYTES, 1><<<num_blocks, threadsPerBlock>>>((uint8 *)mystuff->d_bitarray, (uint8 *)mystuff->d_sieve_info,
-                                                                 primes_per_thread);
+        SegSieve<BLOCK_BYTES, 1><<<num_blocks, threadsPerBlock, 0, stream>>>(bitarray, (uint8 *)mystuff->d_sieve_info,
+                                                                            primes_per_thread);
     else
-        SegSieve<BLOCK_BYTES, 0><<<num_blocks, threadsPerBlock>>>((uint8 *)mystuff->d_bitarray, (uint8 *)mystuff->d_sieve_info,
-                                                                 primes_per_thread);
+        SegSieve<BLOCK_BYTES, 0><<<num_blocks, threadsPerBlock, 0, stream>>>(bitarray, (uint8 *)mystuff->d_sieve_info,
+                                                                            primes_per_thread);
 }
 
-void gpusieve(mystuff_t *mystuff, unsigned long long num_k_remaining)
+void gpusieve_launch(mystuff_t *mystuff, unsigned long long num_k_remaining, cudaStream_t stream, unsigned int *bitarray)
 {
     int sieve_size;
 
 #ifdef RAW_GPU_BENCH
-    // Quick hack (leave bit array set to all ones) to eliminate sieve time from GPU-code benchmarks.
-    // Can also be used to isolate a bug by eliminating the GPU sieving code as a possible cause.
     return;
 #endif
 
-    // Sieve at most 128 million k values.
     if ((unsigned long long)mystuff->gpu_sieve_size < num_k_remaining)
         sieve_size = mystuff->gpu_sieve_size;
     else
         sieve_size = (int)num_k_remaining;
 
-    // Do some sieving on the GPU!  gpu_sieve_size is a multiple of every segment size, so the
-    // last segment never extends past the bit array.
+    if (bitarray == NULL) bitarray = mystuff->d_bitarray[0];
+
     if (mystuff->gpu_sieve_segment_size == 262144)
-        launch_SegSieve<32768>(mystuff, sieve_size);
+        launch_SegSieve<32768>(mystuff, sieve_size, stream, (uint8 *)bitarray);
     else if (mystuff->gpu_sieve_segment_size == 131072)
-        launch_SegSieve<16384>(mystuff, sieve_size);
+        launch_SegSieve<16384>(mystuff, sieve_size, stream, (uint8 *)bitarray);
     else
-        launch_SegSieve<8192>(mystuff, sieve_size);
+        launch_SegSieve<8192>(mystuff, sieve_size, stream, (uint8 *)bitarray);
+}
+
+void gpusieve(mystuff_t *mystuff, unsigned long long num_k_remaining)
+{
+    gpusieve_launch(mystuff, num_k_remaining, 0, mystuff->d_bitarray[0]);
+}
+
+extern "C" __host__ void gpusieve_shutdown(mystuff_t *mystuff)
+{
+    cudaFree(mystuff->d_bitarray[0]);
+    cudaFree(mystuff->d_bitarray[1]);
+    cudaFree(mystuff->d_sieve_info);
+    cudaFree(mystuff->d_calc_bit_to_clear_info);
+    mystuff->d_bitarray[0] = mystuff->d_bitarray[1] = NULL;
+    mystuff->d_sieve_info = mystuff->d_calc_bit_to_clear_info = NULL;
+    if (mystuff->gpu_sieve_pipeline && mystuff->gs_sieve_stream) {
+        cudaStreamDestroy(mystuff->gs_sieve_stream);
+        cudaStreamDestroy(mystuff->gs_tf_stream);
+        for (int b = 0; b < 2; b++) {
+            cudaEventDestroy(mystuff->gs_sieve_done[b]);
+            cudaEventDestroy(mystuff->gs_tf_done[b]);
+        }
+        mystuff->gs_sieve_stream = mystuff->gs_tf_stream = 0;
+    }
 }

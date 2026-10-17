@@ -20,11 +20,15 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 extern "C" {
 #endif
 void gpusieve_init(mystuff_t *mystuff);
+void gpusieve_shutdown(mystuff_t *mystuff);
 #if defined(NVCC_EXTERN) || defined(_MSC_VER)
 }
 #endif
 void gpusieve_rebuild_primes(mystuff_t *mystuff);
 void gpusieve_init_exponent(mystuff_t *mystuff);
 void gpusieve_init_class(mystuff_t *mystuff, unsigned long long k_min);
+void gpusieve_init_class_on(mystuff_t *mystuff, unsigned long long k_min, cudaStream_t stream);
 void gpusieve_advance_class(mystuff_t *mystuff, unsigned int bits_advanced);
+void gpusieve_advance_class_on(mystuff_t *mystuff, unsigned int bits_advanced, cudaStream_t stream);
 void gpusieve(mystuff_t *mystuff, unsigned long long num_k_remaining);
+void gpusieve_launch(mystuff_t *mystuff, unsigned long long num_k_remaining, cudaStream_t stream, unsigned int *bitarray);

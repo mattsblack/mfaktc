@@ -114,10 +114,13 @@ typedef struct {
     int gpu_sieve_segment_size; /* Bits sieved in shared memory by each GPU sieve block: 64K, 128K or 256K */
     int gpu_sieve_atomic_marks; /* TRUE if the GPU sieve marks composites with shared-memory atomics */
     int gpu_sieve_autotune; /* 1: time sieve+TF configs and cache the winner; 0: use the INI values as-is */
+    int gpu_sieve_pipeline; /* 1: sieve the next batch while trial-factoring the current one */
     unsigned int gpu_sieve_min_exp; /* the minimum exponent allowed for GPU sieving */
-    unsigned int *d_bitarray; /* 128M bit array for GPU sieve */
+    unsigned int *d_bitarray[2]; /* sieve bit arrays; [1] is used when gpu_sieve_pipeline is set */
     unsigned int *d_sieve_info; /* Device array containing compressed info needed for prime number GPU sieves */
     unsigned int *d_calc_bit_to_clear_info; /* Device array containing uncompressed info needed to calculate initial bit-to-clear */
+    cudaStream_t gs_sieve_stream, gs_tf_stream;
+    cudaEvent_t gs_sieve_done[2], gs_tf_done[2];
 
     int printmode;
     int allowsleep;

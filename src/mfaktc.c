@@ -751,6 +751,7 @@ int main(int argc, char **argv)
     mystuff.gpu_sieve_segment_size = GPU_SIEVE_SEGMENT_SIZE_DEFAULT * 1024;
     mystuff.gpu_sieve_atomic_marks = 0;
     mystuff.gpu_sieve_autotune     = GPU_SIEVE_AUTOTUNE_DEFAULT;
+    mystuff.gpu_sieve_pipeline     = GPU_SIEVE_PIPELINE_DEFAULT;
     mystuff.gpu_sieve_batch_size   = mystuff.gpu_sieve_size;
     sprintf(mystuff.resultfile, "results.txt");
     sprintf(mystuff.jsonresultfile, "results.json.txt");
@@ -1246,9 +1247,7 @@ int main(int argc, char **argv)
     sieve_free();
 
     // Free GPU sieve data structures
-    cudaFree(mystuff.d_bitarray);
-    cudaFree(mystuff.d_sieve_info);
-    cudaFree(mystuff.d_calc_bit_to_clear_info);
+    gpusieve_shutdown(&mystuff);
     close_log(&mystuff);
     return 0;
 }

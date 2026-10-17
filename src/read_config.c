@@ -397,6 +397,19 @@ int read_config(mystuff_t *mystuff)
             logprintf(mystuff, "  GPUSieveAutotune          %s\n", i ? "enabled" : "disabled");
         }
         mystuff->gpu_sieve_autotune = i;
+
+        /*****************************************************************************/
+
+        if (my_read_int("mfaktc.ini", "GPUSievePipeline", &i)) {
+            i = GPU_SIEVE_PIPELINE_DEFAULT;
+        } else if (i != 0 && i != 1) {
+            logprintf(mystuff, "Warning: GPUSievePipeline must be 0 or 1, using default value (%d)\n", GPU_SIEVE_PIPELINE_DEFAULT);
+            i = GPU_SIEVE_PIPELINE_DEFAULT;
+        }
+        if (mystuff->verbosity >= 2) {
+            logprintf(mystuff, "  GPUSievePipeline          %s\n", i ? "enabled" : "disabled");
+        }
+        mystuff->gpu_sieve_pipeline = i;
     }
 
     /*****************************************************************************/

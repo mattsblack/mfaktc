@@ -91,6 +91,7 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
     int threads_per_block = THREADS_PER_BLOCK;
 #endif
     int factorsfound = 0;
+    int buf = 0, have_tf[2] = { 0, 0 };
     cudaError_t cuda_ret;
     const unsigned long long int original_k_min = k_min;
     // Set after a candidate buffer overflow; from then on this wrapper keeps the
@@ -142,8 +143,19 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
         b_preinit.d5 = 1 << (ln2b - 160); // b_preinit = 2^ln2b
 
 restart_class:
-    k_min = original_k_min;
-    count = 0;
+    k_min        = original_k_min;
+    count        = 0;
+    buf          = 0;
+    have_tf[0]   = have_tf[1] = 0;
+    if (mystuff->gpu_sieve_pipeline && mystuff->gs_tf_stream) {
+        cudaStreamSynchronize(mystuff->gs_sieve_stream);
+        cudaStreamSynchronize(mystuff->gs_tf_stream);
+        // Both bit arrays are idle, so the sieve stream may wait on these
+        // from the first batch onward (needed for a uniform pipeline step).
+        cudaEventRecord(mystuff->gs_tf_done[0], mystuff->gs_tf_stream);
+        cudaEventRecord(mystuff->gs_tf_done[1], mystuff->gs_tf_stream);
+        have_tf[0] = have_tf[1] = 1;
+    }
 
     /* set result array to 0, RES[0] is the factor count and RES[31] flags a candidate buffer overflow */
     cuda_ret = cudaMemset(mystuff->d_RES, 0, 32 * sizeof(int));
@@ -368,7 +380,8 @@ restart_class:
                active_blocks_256 * THREADS_PER_BLOCK);
 #endif
 
-    // Loop until all the k's are processed
+    // Loop until all the k's are processed.  buf selects which of the two sieve
+    // bit arrays the current batch uses when GPUSievePipeline is enabled.
     for (;;) {
         // Calculate the number of k's remaining.  Round this up so that we sieve an array that is
         // a multiple of the bits processed by each TF kernel (my_stuff->gpu_sieve_processing_size).
@@ -429,7 +442,7 @@ restart_class:
                 if (err == cudaSuccess) err = cudaEventRecord(ev0, 0);
                 if (err == cudaSuccess)
                     err = gs_launch_variant(gv, nblocks, gs_variant_shared_mem(gv, smem), 0, mystuff->exponent, k_base,
-                                            mystuff->d_bitarray, (unsigned int)process_bits, shiftcount, b_preinit, scratch,
+                                            mystuff->d_bitarray[0], (unsigned int)process_bits, shiftcount, b_preinit, scratch,
                                             mystuff->bit_min - 63);
                 if (err == cudaSuccess) err = cudaEventRecord(ev1, 0);
                 if (err == cudaSuccess) err = cudaEventSynchronize(ev1);
@@ -467,7 +480,7 @@ restart_class:
                 auto launch = [&](int a, unsigned int *result) {
                     const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[applicable[a]];
                     return gs_launch_variant(gv, nblocks, gs_variant_shared_mem(gv, smem), 0, mystuff->exponent, k_base,
-                                             mystuff->d_bitarray, (unsigned int)process_bits, shiftcount, b_preinit, result,
+                                             mystuff->d_bitarray[0], (unsigned int)process_bits, shiftcount, b_preinit, result,
                                              mystuff->bit_min - 63);
                 };
                 int fastest = 0;
@@ -602,26 +615,54 @@ restart_class:
         }
 #endif
 
-        // Do some sieving on the GPU.
+        // Do some sieving on the GPU.  With GPUSievePipeline, this writes bit
+        // array `buf` on the sieve stream; trial factoring of the other array
+        // can still be running.
+
+        const int pipeline = mystuff->gpu_sieve_pipeline && mystuff->d_bitarray[1] != NULL;
+        cudaStream_t sieve_stream = pipeline ? mystuff->gs_sieve_stream : 0;
+        cudaStream_t tf_stream    = pipeline ? mystuff->gs_tf_stream : 0;
+        if (pipeline && k_min == original_k_min) {
+            cuda_ret = cudaStreamSynchronize(0); // drain autotune / init_class on the default stream
+            if (cuda_ret != cudaSuccess) {
+                printf("ERROR: GPU-sieve pipeline setup failed: %s\n", cudaGetErrorString(cuda_ret));
+                return RET_CUDA_ERROR;
+            }
+        }
+        if (pipeline && have_tf[buf]) {
+            cuda_ret = cudaStreamWaitEvent(sieve_stream, mystuff->gs_tf_done[buf], 0);
+            if (cuda_ret != cudaSuccess) {
+                printf("ERROR: GPU-sieve pipeline wait failed: %s\n", cudaGetErrorString(cuda_ret));
+                return RET_CUDA_ERROR;
+            }
+        }
 
         cuda_ret = gs_timing_begin_batch(&gs_class_timing);
-        if (cuda_ret == cudaSuccess) cuda_ret = gs_timing_record(&gs_class_timing, GS_EV_SIEVE_START, 0);
+        if (cuda_ret == cudaSuccess) cuda_ret = gs_timing_record(&gs_class_timing, GS_EV_SIEVE_START, sieve_stream);
         if (cuda_ret != cudaSuccess) {
             printf("ERROR: GPU timing failed: %s\n", cudaGetErrorString(cuda_ret));
             return RET_CUDA_ERROR;
         }
-        gpusieve(mystuff, k_remaining);
-        gs_timing_record(&gs_class_timing, GS_EV_SIEVE_END, 0);
+        gpusieve_launch(mystuff, k_remaining, sieve_stream, mystuff->d_bitarray[buf]);
+        gs_timing_record(&gs_class_timing, GS_EV_SIEVE_END, sieve_stream);
+        if (pipeline) {
+            cuda_ret = cudaEventRecord(mystuff->gs_sieve_done[buf], sieve_stream);
+            if (cuda_ret != cudaSuccess) {
+                printf("ERROR: GPU-sieve pipeline event failed: %s\n", cudaGetErrorString(cuda_ret));
+                return RET_CUDA_ERROR;
+            }
+        }
 
 #ifdef MFAKTC_GS_VARIANTS
         if (mystuff->mode == MODE_NORMAL && !mystuff->gpu_sieve_autotune) {
+            if (pipeline) cudaEventSynchronize(mystuff->gs_sieve_done[buf]);
             if (tuned_device >= 0 && tuned_bit_min == mystuff->bit_min && tuned_exponent == mystuff->exponent)
                 variant = tuned_variant;
             else if (numblocks == mystuff->gpu_sieve_size / mystuff->gpu_sieve_processing_size) {
                 auto launch = [&](int a, unsigned int *result) {
                     const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[applicable[a]];
                     return gs_launch_variant(gv, numblocks, gs_variant_shared_mem(gv, shared_mem_required), 0, mystuff->exponent,
-                                             k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
+                                             k_base, mystuff->d_bitarray[0], mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
                                              result, mystuff->bit_min - 63);
                 };
                 int fastest = 0;
@@ -648,19 +689,26 @@ restart_class:
 
         // Now let the GPU trial factor the candidates that survived the sieving
 
-        gs_timing_record(&gs_class_timing, GS_EV_TF_START, 0);
+        if (pipeline) {
+            cuda_ret = cudaStreamWaitEvent(tf_stream, mystuff->gs_sieve_done[buf], 0);
+            if (cuda_ret != cudaSuccess) {
+                printf("ERROR: GPU-sieve pipeline wait failed: %s\n", cudaGetErrorString(cuda_ret));
+                return RET_CUDA_ERROR;
+            }
+        }
+        gs_timing_record(&gs_class_timing, GS_EV_TF_START, tf_stream);
 #ifdef MFAKTC_GS_VARIANTS
         cuda_ret = gs_launch_variant(&MFAKTC_GS_VARIANTS[variant], numblocks,
-                                     gs_variant_shared_mem(&MFAKTC_GS_VARIANTS[variant], shared_mem_required), 0, mystuff->exponent,
-                                     k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
-                                     mystuff->d_RES, mystuff->bit_min - 63);
+                                     gs_variant_shared_mem(&MFAKTC_GS_VARIANTS[variant], shared_mem_required), tf_stream,
+                                     mystuff->exponent, k_base, mystuff->d_bitarray[buf], mystuff->gpu_sieve_processing_size,
+                                     shiftcount, b_preinit, mystuff->d_RES, mystuff->bit_min - 63);
         if (cuda_ret != cudaSuccess) {
             printf("ERROR: TF kernel launch failed: %s\n", cudaGetErrorString(cuda_ret));
             return RET_CUDA_ERROR;
         }
 #else
-        MFAKTC_FUNC<<<numblocks, threads_per_block, shared_mem_required>>>(
-            mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, mystuff->d_RES
+        MFAKTC_FUNC<<<numblocks, threads_per_block, shared_mem_required, tf_stream>>>(
+            mystuff->exponent, k_base, mystuff->d_bitarray[buf], mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, mystuff->d_RES
 #if defined(TF_BARRETT) && \
     (defined(TF_BARRETT_87BIT_GS) || defined(TF_BARRETT_88BIT_GS) || defined(TF_BARRETT_92BIT_GS) || defined(DEBUG_GPU_MATH))
             ,
@@ -672,8 +720,16 @@ restart_class:
 #endif
         );
 #endif
-        gs_timing_record(&gs_class_timing, GS_EV_TF_END, 0);
+        gs_timing_record(&gs_class_timing, GS_EV_TF_END, tf_stream);
         gs_timing_end_batch(&gs_class_timing);
+        if (pipeline) {
+            cuda_ret = cudaEventRecord(mystuff->gs_tf_done[buf], tf_stream);
+            if (cuda_ret != cudaSuccess) {
+                printf("ERROR: GPU-sieve pipeline event failed: %s\n", cudaGetErrorString(cuda_ret));
+                return RET_CUDA_ERROR;
+            }
+            have_tf[buf] = 1;
+        }
 
         // Count the number of blocks processed
         count += numblocks;
@@ -682,10 +738,15 @@ restart_class:
         k_min += (unsigned long long)mystuff->gpu_sieve_batch_size * NUM_CLASSES;
         if (k_min > k_max) break;
 
-        gpusieve_advance_class(mystuff, mystuff->gpu_sieve_batch_size);
+        gpusieve_advance_class_on(mystuff, mystuff->gpu_sieve_batch_size, sieve_stream);
+        if (pipeline) buf = 1 - buf;
     }
 
     /* download results from GPU */
+    if (mystuff->gpu_sieve_pipeline && mystuff->gs_tf_stream) {
+        cudaStreamSynchronize(mystuff->gs_sieve_stream);
+        cudaStreamSynchronize(mystuff->gs_tf_stream);
+    }
     cuda_ret = cudaMemcpy(mystuff->h_RES, mystuff->d_RES, 32 * sizeof(int), cudaMemcpyDeviceToHost);
     if (cuda_ret != cudaSuccess) {
         printf("ERROR: GPU-sieve trial factoring failed: %s\n", cudaGetErrorString(cuda_ret));
