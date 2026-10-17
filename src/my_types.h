@@ -16,6 +16,9 @@ You should have received a copy of the GNU General Public License
 along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifndef MY_TYPES_H
+#define MY_TYPES_H
+
 /* 72bit (3x 24bit) integer
 D=d0 + d1*(2^24) + d2*(2^48) */
 typedef struct {
@@ -183,3 +186,5 @@ enum MODES { MODE_NORMAL, MODE_SELFTEST_SHORT, MODE_SELFTEST_FULL };
 #define COMPUTE_CAPABILITY_PASCAL 600
 #define VOLTA                     700
 #define TURING                    750
+
+#endif

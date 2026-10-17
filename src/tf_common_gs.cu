@@ -21,6 +21,10 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 #include "gs_timing.cuh"
 #include "gs_workload_tune.cuh"
 
+#include <cuda_runtime.h>
+
+void gpusieve_graph_sieve_params(mystuff_t *mystuff, int sieve_size, unsigned int *bitarray, cudaKernelNodeParams *p);
+
 #undef RAW_GPU_BENCH // FIXME
 
 #ifdef TF_96BIT
