@@ -18,6 +18,7 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 #ifndef MFAKTC_TF_AUTOTUNE_CUH
 #define MFAKTC_TF_AUTOTUNE_CUH
 
+#include <string.h>
 #include <cuda_runtime.h>
 
 #define GS_MAX_VARIANTS 64
@@ -56,6 +57,39 @@ static cudaError_t gs_launch_variant(const gs_variant_t *variant, int numblocks,
 {
     void *args[] = { &exp, &k_base, &bit_array, &bits_to_process, &shiftcount, &b_preinit, &RES, &bit_max64 };
     return cudaLaunchKernel((const void *)variant->kernel, dim3(numblocks), dim3(variant->threads), args, shared_mem, stream);
+}
+
+static void gs_fill_tf_node(cudaKernelNodeParams *p, const gs_variant_t *variant, int numblocks, size_t shared_mem, void **args)
+{
+    memset(p, 0, sizeof(*p));
+    p->func           = (void *)variant->kernel;
+    p->gridDim        = dim3(numblocks);
+    p->blockDim       = dim3(variant->threads);
+    p->sharedMemBytes = shared_mem;
+    p->kernelParams   = args;
+}
+
+static cudaError_t gs_graph_find_kernels(cudaGraph_t graph, cudaGraphNode_t *sieve_node, cudaGraphNode_t *tf_node)
+{
+    size_t n = 0;
+    cudaGraphNode_t nodes[16];
+    int k = 0;
+    cudaError_t err = cudaGraphGetNodes(graph, NULL, &n);
+    if (err != cudaSuccess) return err;
+    if (n > 16) return cudaErrorInvalidValue;
+    err = cudaGraphGetNodes(graph, nodes, &n);
+    for (size_t i = 0; i < n && err == cudaSuccess; i++) {
+        cudaGraphNodeType type;
+        err = cudaGraphNodeGetType(nodes[i], &type);
+        if (err == cudaSuccess && type == cudaGraphNodeTypeKernel) {
+            if (k == 0)
+                *sieve_node = nodes[i];
+            else if (k == 1)
+                *tf_node = nodes[i];
+            k++;
+        }
+    }
+    return err != cudaSuccess ? err : (k >= 2 ? cudaSuccess : cudaErrorInvalidValue);
 }
 
 /* Times count launch variants of the same TF work on the current sieve batch

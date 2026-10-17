@@ -410,6 +410,19 @@ int read_config(mystuff_t *mystuff)
             logprintf(mystuff, "  GPUSievePipeline          %s\n", i ? "enabled" : "disabled");
         }
         mystuff->gpu_sieve_pipeline = i;
+
+        /*****************************************************************************/
+
+        if (my_read_int("mfaktc.ini", "GPUSieveGraphs", &i)) {
+            i = GPU_SIEVE_GRAPHS_DEFAULT;
+        } else if (i != 0 && i != 1) {
+            logprintf(mystuff, "Warning: GPUSieveGraphs must be 0 or 1, using default value (%d)\n", GPU_SIEVE_GRAPHS_DEFAULT);
+            i = GPU_SIEVE_GRAPHS_DEFAULT;
+        }
+        if (mystuff->verbosity >= 2) {
+            logprintf(mystuff, "  GPUSieveGraphs            %s\n", i ? "enabled" : "disabled");
+        }
+        mystuff->gpu_sieve_graphs = i;
     }
 
     /*****************************************************************************/

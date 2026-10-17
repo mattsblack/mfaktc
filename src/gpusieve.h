@@ -32,3 +32,4 @@ void gpusieve_advance_class(mystuff_t *mystuff, unsigned int bits_advanced);
 void gpusieve_advance_class_on(mystuff_t *mystuff, unsigned int bits_advanced, cudaStream_t stream);
 void gpusieve(mystuff_t *mystuff, unsigned long long num_k_remaining);
 void gpusieve_launch(mystuff_t *mystuff, unsigned long long num_k_remaining, cudaStream_t stream, unsigned int *bitarray);
+void gpusieve_graph_sieve_params(mystuff_t *mystuff, int sieve_size, unsigned int *bitarray, cudaKernelNodeParams *p);

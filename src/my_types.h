@@ -115,6 +115,7 @@ typedef struct {
     int gpu_sieve_atomic_marks; /* TRUE if the GPU sieve marks composites with shared-memory atomics */
     int gpu_sieve_autotune; /* 1: time sieve+TF configs and cache the winner; 0: use the INI values as-is */
     int gpu_sieve_pipeline; /* 1: sieve the next batch while trial-factoring the current one */
+    int gpu_sieve_graphs; /* 1: replay a CUDA graph for the steady-state sieve+TF batch */
     unsigned int gpu_sieve_min_exp; /* the minimum exponent allowed for GPU sieving */
     unsigned int *d_bitarray[2]; /* sieve bit arrays; [1] is used when gpu_sieve_pipeline is set */
     unsigned int *d_sieve_info; /* Device array containing compressed info needed for prime number GPU sieves */

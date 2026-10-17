@@ -13,6 +13,7 @@ additions public too, so that others may benefit from your work.
 */
 
 #include <stdio.h>
+#include <string.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 
@@ -1784,6 +1785,33 @@ void gpusieve_launch(mystuff_t *mystuff, unsigned long long num_k_remaining, cud
 void gpusieve(mystuff_t *mystuff, unsigned long long num_k_remaining)
 {
     gpusieve_launch(mystuff, num_k_remaining, 0, mystuff->d_bitarray[0]);
+}
+
+void gpusieve_graph_sieve_params(mystuff_t *mystuff, int sieve_size, unsigned int *bitarray, cudaKernelNodeParams *p)
+{
+    const uint32 block_size = (uint32)mystuff->gpu_sieve_segment_size;
+    const uint32 num_blocks = ((uint32)sieve_size + block_size - 1) / block_size;
+    static uint8 *array, *info;
+    static uint32 maxp;
+    static void *args[3];
+
+    array      = (uint8 *)bitarray;
+    info       = (uint8 *)mystuff->d_sieve_info;
+    maxp       = primes_per_thread;
+    args[0]    = &array;
+    args[1]    = &info;
+    args[2]    = &maxp;
+    memset(p, 0, sizeof(*p));
+    if (mystuff->gpu_sieve_segment_size == 262144)
+        p->func = mystuff->gpu_sieve_atomic_marks ? (void *)SegSieve<32768, 1> : (void *)SegSieve<32768, 0>;
+    else if (mystuff->gpu_sieve_segment_size == 131072)
+        p->func = mystuff->gpu_sieve_atomic_marks ? (void *)SegSieve<16384, 1> : (void *)SegSieve<16384, 0>;
+    else
+        p->func = mystuff->gpu_sieve_atomic_marks ? (void *)SegSieve<8192, 1> : (void *)SegSieve<8192, 0>;
+    p->gridDim        = dim3(num_blocks);
+    p->blockDim       = dim3(threadsPerBlock);
+    p->sharedMemBytes = 0;
+    p->kernelParams   = args;
 }
 
 extern "C" __host__ void gpusieve_shutdown(mystuff_t *mystuff)
