@@ -20,43 +20,66 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <cuda_runtime.h>
 
-/* Times two launch configurations of the same TF kernel on the current sieve
-   batch and sets *best_threads to 128 or 256, whichever ran faster.  The launch
-   functors take the result array to write to; they are given a scratch array so
-   calibration never adds factors to the real results.  Both variants are warmed
-   up first and the measurement order alternates to reduce ordering bias. */
-template <typename Launch128, typename Launch256>
-static cudaError_t mfaktc_time_block_variants(Launch128 launch128, Launch256 launch256, int *best_threads)
+/* Every timed variant of a GPU-sieve Barrett kernel has this signature. */
+typedef void (*gs_kernel_t)(unsigned int exp, int96 k_base, const unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
+                            int192 b_preinit, unsigned int *RES, int bit_max64);
+
+typedef struct {
+    gs_kernel_t kernel;
+    int threads; /* block size the kernel was compiled for */
+    int cands;   /* factor candidates each thread tests at once */
+} gs_variant_t;
+
+#define GS_MAX_VARIANTS 64
+
+static cudaError_t gs_launch_variant(const gs_variant_t *variant, int numblocks, size_t shared_mem, cudaStream_t stream, unsigned int exp,
+                                     int96 k_base, const unsigned int *bit_array, unsigned int bits_to_process, int shiftcount,
+                                     int192 b_preinit, unsigned int *RES, int bit_max64)
 {
-    const int repeats      = 4;
-    unsigned int *scratch  = NULL;
-    cudaEvent_t start      = NULL, stop = NULL;
-    float elapsed, sums[2] = { 0.0f, 0.0f };
+    void *args[] = { &exp, &k_base, &bit_array, &bits_to_process, &shiftcount, &b_preinit, &RES, &bit_max64 };
+    return cudaLaunchKernel((const void *)variant->kernel, dim3(numblocks), dim3(variant->threads), args, shared_mem, stream);
+}
+
+/* Times count launch variants of the same TF work on the current sieve batch
+   and sets *best to the index of the fastest.  launch(index, result) must
+   start variant index writing to the result array it is given; that is a
+   scratch array, so calibration never adds factors to the real results.  All
+   variants are warmed up first and the measurement order is reversed on
+   alternate passes to reduce ordering bias. */
+template <typename Launch> static cudaError_t mfaktc_time_variants(int count, Launch launch, int *best)
+{
+    const int repeats     = 4;
+    unsigned int *scratch = NULL;
+    cudaEvent_t start = NULL, stop = NULL;
+    float elapsed, sums[GS_MAX_VARIANTS];
     cudaError_t err, err2;
+
+    if (count < 1 || count > GS_MAX_VARIANTS) return cudaErrorInvalidValue;
+    for (int v = 0; v < count; v++)
+        sums[v] = 0.0f;
 
     err = cudaMalloc((void **)&scratch, 32 * sizeof(unsigned int));
     if (err == cudaSuccess) err = cudaEventCreate(&start);
     if (err == cudaSuccess) err = cudaEventCreate(&stop);
 
     for (int pass = -1; pass < repeats && err == cudaSuccess; pass++) {
-        for (int position = 0; position < 2 && err == cudaSuccess; position++) {
-            const int variant = pass < 0 ? position : position ^ (pass & 1);
+        for (int position = 0; position < count && err == cudaSuccess; position++) {
+            const int variant = (pass & 1) ? count - 1 - position : position;
 
             err = cudaMemsetAsync(scratch, 0, 32 * sizeof(unsigned int), 0);
             if (err == cudaSuccess) err = cudaEventRecord(start, 0);
-            if (err != cudaSuccess) break;
-            if (variant == 0)
-                launch128(scratch);
-            else
-                launch256(scratch);
-            err = cudaGetLastError();
+            if (err == cudaSuccess) err = launch(variant, scratch);
             if (err == cudaSuccess) err = cudaEventRecord(stop, 0);
             if (err == cudaSuccess) err = cudaEventSynchronize(stop);
             if (err == cudaSuccess) err = cudaEventElapsedTime(&elapsed, start, stop);
             if (err == cudaSuccess && pass >= 0) sums[variant] += elapsed; // pass -1 is the warm-up
         }
     }
-    if (err == cudaSuccess) *best_threads = sums[0] < sums[1] ? 128 : 256;
+    if (err == cudaSuccess) {
+        *best = 0;
+        for (int v = 1; v < count; v++)
+            if (sums[v] < sums[*best]) *best = v;
+    }
 
     if (stop != NULL && (err2 = cudaEventDestroy(stop)) != cudaSuccess && err == cudaSuccess) err = err2;
     if (start != NULL && (err2 = cudaEventDestroy(start)) != cudaSuccess && err == cudaSuccess) err = err2;

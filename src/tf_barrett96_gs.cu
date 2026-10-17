@@ -44,6 +44,7 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 #include "tf_barrett96_core.cu"
 
 #include "gpusieve_helper.cu"
+#include "tf_autotune.cuh"
 
 #define KERNEL_MIN_BLOCKS 2
 
@@ -327,49 +328,86 @@ a is precomputed on host ONCE.
 }
 
 #ifndef DEBUG_GPU_MATH
-/* Separate launch-bound variants let NVCC choose an independent register
-   budget and schedule for each block size; the host times both and keeps the
-   faster one.  The 76/77/79-bit variants accept bit_max64 but don't use it, so all
-   variants share one launch signature. */
-#define GS_TEST_ARGS_BIT_MAX (f, b_preinit, initial_shifter_value, RES, bit_max64)
-#define GS_TEST_ARGS         (f, b_preinit, initial_shifter_value, RES)
-#define DEFINE_GS_VARIANT(BITS, THREADS, TEST_ARGS)                                                                                   \
-    __global__ __launch_bounds__(THREADS, KERNEL_MIN_BLOCKS) void mfaktc_barrett##BITS##_gs_##THREADS(                              \
-        unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array, unsigned int bits_to_process, int shiftcount,   \
-        int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)                                                            \
-    {                                                                                                                               \
-        int96 f, f_base;                                                                                                            \
-        int i, initial_shifter_value, total_bit_count, k_delta;                                                                     \
-        extern __shared__ unsigned short k_deltas[];                                                                                \
-                                                                                                                                    \
-        create_k_deltas(bit_array, bits_to_process, &total_bit_count, k_deltas, RES);                                               \
-        create_fbase96(&f_base, k_base, exp, bits_to_process);                                                                      \
-        initial_shifter_value = exp << (32 - shiftcount);                                                                           \
-                                                                                                                                    \
-        for (i = threadIdx.x; i < total_bit_count; i += blockDim.x) {                                                               \
-            k_delta = k_deltas[i];                                                                                                  \
-            f.d0    = __add_cc(f_base.d0, __umul32(2 * k_delta * NUM_CLASSES, exp));                                                \
-            f.d1    = __addc_cc(f_base.d1, __umul32hi(2 * k_delta * NUM_CLASSES, exp));                                             \
-            f.d2    = __addc(f_base.d2, 0);                                                                                         \
-            test_FC96_barrett##BITS TEST_ARGS;                                                                                      \
-        }                                                                                                                           \
-    }
+#include "tf_barrett96_core_multi.cu"
 
-DEFINE_GS_VARIANT(92, 128, GS_TEST_ARGS_BIT_MAX)
-DEFINE_GS_VARIANT(92, 256, GS_TEST_ARGS_BIT_MAX)
-DEFINE_GS_VARIANT(88, 128, GS_TEST_ARGS_BIT_MAX)
-DEFINE_GS_VARIANT(88, 256, GS_TEST_ARGS_BIT_MAX)
-DEFINE_GS_VARIANT(87, 128, GS_TEST_ARGS_BIT_MAX)
-DEFINE_GS_VARIANT(87, 256, GS_TEST_ARGS_BIT_MAX)
-DEFINE_GS_VARIANT(79, 128, GS_TEST_ARGS)
-DEFINE_GS_VARIANT(79, 256, GS_TEST_ARGS)
-DEFINE_GS_VARIANT(77, 128, GS_TEST_ARGS)
-DEFINE_GS_VARIANT(77, 256, GS_TEST_ARGS)
-DEFINE_GS_VARIANT(76, 128, GS_TEST_ARGS)
-DEFINE_GS_VARIANT(76, 256, GS_TEST_ARGS)
-#undef DEFINE_GS_VARIANT
-#undef GS_TEST_ARGS
-#undef GS_TEST_ARGS_BIT_MAX
+/* gs_test<BITS, CANDS>::run() tests CANDS candidates with the BITS-bit Barrett
+   code.  One candidate per thread uses the original test_FC96_barrettXX(). */
+template <int BITS, int CANDS> struct gs_test;
+
+#define GS_BIT_MAX_ARG , bit_max64
+#define DEFINE_GS_TEST(BITS, BIT_MAX_ARG)                                                                                          \
+    template <int CANDS> struct gs_test<BITS, CANDS> {                                                                             \
+        __device__ static __forceinline__ void run(const int96 *f, const int *valid, int192 b, unsigned int shifter, unsigned int *RES, \
+                                                   int bit_max64)                                                                  \
+        {                                                                                                                          \
+            test_FC96_barrett##BITS##_n<CANDS>(f, valid, b, shifter, RES BIT_MAX_ARG);                                             \
+        }                                                                                                                          \
+    };                                                                                                                             \
+    template <> struct gs_test<BITS, 1> {                                                                                          \
+        __device__ static __forceinline__ void run(const int96 *f, const int *valid, int192 b, unsigned int shifter, unsigned int *RES, \
+                                                   int bit_max64)                                                                  \
+        {                                                                                                                          \
+            if (valid[0]) test_FC96_barrett##BITS(f[0], b, shifter, RES BIT_MAX_ARG);                                              \
+        }                                                                                                                          \
+    };
+
+DEFINE_GS_TEST(92, GS_BIT_MAX_ARG)
+DEFINE_GS_TEST(88, GS_BIT_MAX_ARG)
+DEFINE_GS_TEST(87, GS_BIT_MAX_ARG)
+DEFINE_GS_TEST(79, )
+DEFINE_GS_TEST(77, )
+DEFINE_GS_TEST(76, )
+#undef DEFINE_GS_TEST
+#undef GS_BIT_MAX_ARG
+
+/* Separate launch-bound variants let NVCC choose an independent register
+   budget and schedule for each block size, and with two candidates per thread
+   each thread has two independent modular exponentiations to interleave, at
+   the cost of more registers.  The host times the variants and keeps the
+   fastest.  The 76/77/79-bit variants accept bit_max64 but don't use it, so all
+   variants share one launch signature (gs_kernel_t). */
+template <int BITS, int THREADS, int CANDS>
+__global__ void __launch_bounds__(THREADS, KERNEL_MIN_BLOCKS)
+    mfaktc_barrett_gs(unsigned int exp, int96 k_base, const unsigned int *__restrict__ bit_array, unsigned int bits_to_process,
+                      int shiftcount, int192 b_preinit, unsigned int *__restrict__ RES, int bit_max64)
+{
+    int96 f[CANDS], f_base;
+    int valid[CANDS];
+    int i, total_bit_count;
+    unsigned int initial_shifter_value;
+    extern __shared__ unsigned short k_deltas[];
+
+    create_k_deltas(bit_array, bits_to_process, &total_bit_count, k_deltas, RES);
+    create_fbase96(&f_base, k_base, exp, bits_to_process);
+    initial_shifter_value = exp << (32 - shiftcount);
+
+    for (i = threadIdx.x; i < total_bit_count; i += CANDS * blockDim.x) {
+#pragma unroll
+        for (int c = 0; c < CANDS; c++) {
+            // a slot past the last candidate repeats this thread's first one, but doesn't report it
+            const int index   = i + c * blockDim.x;
+            valid[c]          = index < total_bit_count;
+            const int k_delta = k_deltas[valid[c] ? index : i];
+            f[c].d0           = __add_cc(f_base.d0, __umul32(2 * k_delta * NUM_CLASSES, exp));
+            f[c].d1           = __addc_cc(f_base.d1, __umul32hi(2 * k_delta * NUM_CLASSES, exp));
+            f[c].d2           = __addc(f_base.d2, 0);
+        }
+        gs_test<BITS, CANDS>::run(f, valid, b_preinit, initial_shifter_value, RES, bit_max64);
+    }
+}
+
+#define GS_VARIANT(BITS, THREADS, CANDS) { mfaktc_barrett_gs<BITS, THREADS, CANDS>, THREADS, CANDS }
+#define GS_VARIANTS(BITS)                                                                                                          \
+    { GS_VARIANT(BITS, 256, 1), GS_VARIANT(BITS, 128, 1), GS_VARIANT(BITS, 256, 2), GS_VARIANT(BITS, 128, 2) }
+
+static const gs_variant_t gs_variants_barrett92[] = GS_VARIANTS(92);
+static const gs_variant_t gs_variants_barrett88[] = GS_VARIANTS(88);
+static const gs_variant_t gs_variants_barrett87[] = GS_VARIANTS(87);
+static const gs_variant_t gs_variants_barrett79[] = GS_VARIANTS(79);
+static const gs_variant_t gs_variants_barrett77[] = GS_VARIANTS(77);
+static const gs_variant_t gs_variants_barrett76[] = GS_VARIANTS(76);
+#undef GS_VARIANTS
+#undef GS_VARIANT
 #endif
 
 #define TF_BARRETT

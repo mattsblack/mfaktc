@@ -36,49 +36,37 @@ extern "C" __host__ int tf_class_95_gs(unsigned long long int k_min, unsigned lo
     extern "C" __host__ int tf_class_barrett76_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett76_gs
 #ifndef DEBUG_GPU_MATH
-#define MFAKTC_DUAL_BLOCK_KERNELS
-#define MFAKTC_FUNC_128 mfaktc_barrett76_gs_128
-#define MFAKTC_FUNC_256 mfaktc_barrett76_gs_256
+#define MFAKTC_GS_VARIANTS gs_variants_barrett76
 #endif
 #elif defined TF_BARRETT_77BIT_GS
     extern "C" __host__ int tf_class_barrett77_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett77_gs
 #ifndef DEBUG_GPU_MATH
-#define MFAKTC_DUAL_BLOCK_KERNELS
-#define MFAKTC_FUNC_128 mfaktc_barrett77_gs_128
-#define MFAKTC_FUNC_256 mfaktc_barrett77_gs_256
+#define MFAKTC_GS_VARIANTS gs_variants_barrett77
 #endif
 #elif defined TF_BARRETT_79BIT_GS
 extern "C" __host__ int tf_class_barrett79_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett79_gs
 #ifndef DEBUG_GPU_MATH
-#define MFAKTC_DUAL_BLOCK_KERNELS
-#define MFAKTC_FUNC_128 mfaktc_barrett79_gs_128
-#define MFAKTC_FUNC_256 mfaktc_barrett79_gs_256
+#define MFAKTC_GS_VARIANTS gs_variants_barrett79
 #endif
 #elif defined TF_BARRETT_87BIT_GS
 extern "C" __host__ int tf_class_barrett87_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett87_gs
 #ifndef DEBUG_GPU_MATH
-#define MFAKTC_DUAL_BLOCK_KERNELS
-#define MFAKTC_FUNC_128 mfaktc_barrett87_gs_128
-#define MFAKTC_FUNC_256 mfaktc_barrett87_gs_256
+#define MFAKTC_GS_VARIANTS gs_variants_barrett87
 #endif
 #elif defined TF_BARRETT_88BIT_GS
 extern "C" __host__ int tf_class_barrett88_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett88_gs
 #ifndef DEBUG_GPU_MATH
-#define MFAKTC_DUAL_BLOCK_KERNELS
-#define MFAKTC_FUNC_128 mfaktc_barrett88_gs_128
-#define MFAKTC_FUNC_256 mfaktc_barrett88_gs_256
+#define MFAKTC_GS_VARIANTS gs_variants_barrett88
 #endif
 #else
 extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsigned long long int k_max, mystuff_t *mystuff)
 #define MFAKTC_FUNC mfaktc_barrett92_gs
 #ifndef DEBUG_GPU_MATH
-#define MFAKTC_DUAL_BLOCK_KERNELS
-#define MFAKTC_FUNC_128 mfaktc_barrett92_gs_128
-#define MFAKTC_FUNC_256 mfaktc_barrett92_gs_256
+#define MFAKTC_GS_VARIANTS gs_variants_barrett92
 #endif
 #endif
 #endif
@@ -92,7 +80,9 @@ extern "C" __host__ int tf_class_barrett92_gs(unsigned long long int k_min, unsi
     unsigned long long k_remaining;
     char string[50];
     int shared_mem_required;
+#ifndef MFAKTC_GS_VARIANTS
     int threads_per_block = THREADS_PER_BLOCK;
+#endif
     int factorsfound = 0;
     cudaError_t cuda_ret;
     const unsigned long long int original_k_min = k_min;
@@ -211,6 +201,53 @@ restart_class:
         exit(1);
     }
 
+#ifdef MFAKTC_GS_VARIANTS
+    // Until a variant has been timed, use the one-candidate variant with the
+    // most resident threads according to the CUDA occupancy calculator.  Cache
+    // the result because this host wrapper runs once for every factoring
+    // class, while its resource use is constant for a run.
+    const int num_variants = (int)(sizeof(MFAKTC_GS_VARIANTS) / sizeof(MFAKTC_GS_VARIANTS[0]));
+    static int cached_shared_mem_required = -1;
+    static int occupancy_variant = 0;
+    int variant;
+    if (cached_shared_mem_required != shared_mem_required) {
+        int best_resident_threads = 0;
+
+        occupancy_variant = 0;
+        for (int v = 0; v < num_variants; v++) {
+            const gs_variant_t *gv = &MFAKTC_GS_VARIANTS[v];
+            int active_blocks      = 0;
+
+            // Opt in to the required dynamic shared-memory size before asking the
+            // occupancy calculator about a launch that uses it.
+            cuda_ret = cudaFuncSetAttribute(gv->kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
+            if (cuda_ret != cudaSuccess) {
+                printf("ERROR: could not configure %d bytes of dynamic shared memory: %s\n", shared_mem_required,
+                       cudaGetErrorString(cuda_ret));
+                return RET_CUDA_ERROR;
+            }
+            cuda_ret = cudaFuncSetAttribute(gv->kernel, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+            if (cuda_ret != cudaSuccess && mystuff->verbosity >= 2)
+                printf("WARNING: could not set the TF shared-memory carveout: %s\n", cudaGetErrorString(cuda_ret));
+
+            if (gv->cands == 1 &&
+                cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks, gv->kernel, gv->threads, shared_mem_required) == cudaSuccess &&
+                active_blocks * gv->threads > best_resident_threads) {
+                best_resident_threads = active_blocks * gv->threads;
+                occupancy_variant     = v;
+            }
+        }
+        cached_shared_mem_required = shared_mem_required;
+        if (mystuff->verbosity >= 3)
+            printf("GPU TF launch: %d threads/block (%d resident threads/SM)\n", MFAKTC_GS_VARIANTS[occupancy_variant].threads,
+                   best_resident_threads);
+    }
+    variant = occupancy_variant;
+
+    // Self-tests cycle through the variants so that each one is checked against known factors.
+    static unsigned int selftest_variant = 0;
+    if (mystuff->mode != MODE_NORMAL) variant = selftest_variant++ % num_variants;
+#else
     // Choose between 128- and 256-thread launches using the CUDA 13 occupancy
     // calculator.  Cache the result because this host wrapper runs once for
     // every factoring class, while its resource use is constant for a run.
@@ -220,51 +257,20 @@ restart_class:
     if (cached_shared_mem_required != shared_mem_required) {
         // Opt in to the required dynamic shared-memory size before asking the
         // occupancy calculator about a launch that uses it.
-        cuda_ret = cudaFuncSetAttribute(
-#ifdef MFAKTC_DUAL_BLOCK_KERNELS
-            MFAKTC_FUNC_128,
-#else
-            MFAKTC_FUNC,
-#endif
-            cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
-#ifdef MFAKTC_DUAL_BLOCK_KERNELS
-        if (cuda_ret == cudaSuccess)
-            cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC_256, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
-#endif
+        cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC, cudaFuncAttributeMaxDynamicSharedMemorySize, shared_mem_required);
         if (cuda_ret != cudaSuccess) {
             printf("ERROR: could not configure %d bytes of dynamic shared memory: %s\n", shared_mem_required,
                    cudaGetErrorString(cuda_ret));
             return RET_CUDA_ERROR;
         }
-        cuda_ret = cudaFuncSetAttribute(
-#ifdef MFAKTC_DUAL_BLOCK_KERNELS
-            MFAKTC_FUNC_128,
-#else
-            MFAKTC_FUNC,
-#endif
-            cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-#ifdef MFAKTC_DUAL_BLOCK_KERNELS
-        if (cuda_ret == cudaSuccess)
-            cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC_256, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
-#endif
+        cuda_ret = cudaFuncSetAttribute(MFAKTC_FUNC, cudaFuncAttributePreferredSharedMemoryCarveout, 100);
         if (cuda_ret != cudaSuccess && mystuff->verbosity >= 2)
             printf("WARNING: could not set the TF shared-memory carveout: %s\n", cudaGetErrorString(cuda_ret));
 
         cached_threads_per_block = THREADS_PER_BLOCK;
-        if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_128,
-#ifdef MFAKTC_DUAL_BLOCK_KERNELS
-                                                          MFAKTC_FUNC_128,
-#else
-                                                          MFAKTC_FUNC,
-#endif
-                                                          128, shared_mem_required) == cudaSuccess &&
-            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_256,
-#ifdef MFAKTC_DUAL_BLOCK_KERNELS
-                                                          MFAKTC_FUNC_256,
-#else
-                                                          MFAKTC_FUNC,
-#endif
-                                                          THREADS_PER_BLOCK, shared_mem_required) == cudaSuccess &&
+        if (cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_128, MFAKTC_FUNC, 128, shared_mem_required) == cudaSuccess &&
+            cudaOccupancyMaxActiveBlocksPerMultiprocessor(&active_blocks_256, MFAKTC_FUNC, THREADS_PER_BLOCK, shared_mem_required) ==
+                cudaSuccess &&
             active_blocks_128 * 128 > active_blocks_256 * THREADS_PER_BLOCK) {
             cached_threads_per_block = 128;
         }
@@ -274,6 +280,7 @@ restart_class:
     if (mystuff->verbosity >= 3 && active_blocks_128 != 0)
         printf("GPU TF launch: %d threads/block (%d vs %d resident threads/SM)\n", threads_per_block, active_blocks_128 * 128,
                active_blocks_256 * THREADS_PER_BLOCK);
+#endif
 
     // Loop until all the k's are processed
     for (;;) {
@@ -304,14 +311,14 @@ restart_class:
         k_base.d1 = (int)(k_min >> 32);
         k_base.d2 = 0;
 
-#ifdef MFAKTC_DUAL_BLOCK_KERNELS
-        // Higher occupancy is not necessarily faster, so time both independently
-        // compiled variants on the first full sieve batch and keep the faster one.
+#ifdef MFAKTC_GS_VARIANTS
+        // Higher occupancy is not necessarily faster, so time all independently
+        // compiled variants on the first full sieve batch and keep the fastest.
         // The arithmetic workload depends on the exponent and bit level, so
         // recalibrate when those or the launch resources change.
         static int tuned_device = -1, tuned_smem = -1, tuned_process_size = -1, tuned_bit_min = -1;
         static unsigned int tuned_exponent = 0;
-        static int tuned_threads = THREADS_PER_BLOCK;
+        static int tuned_variant = 0;
         int current_device = -1;
 
         cuda_ret = cudaGetDevice(&current_device);
@@ -319,25 +326,22 @@ restart_class:
             printf("ERROR: cudaGetDevice() failed: %s\n", cudaGetErrorString(cuda_ret));
             return RET_CUDA_ERROR;
         }
-        if (tuned_device == current_device && tuned_smem == shared_mem_required &&
-            tuned_process_size == mystuff->gpu_sieve_processing_size && tuned_exponent == mystuff->exponent &&
-            tuned_bit_min == mystuff->bit_min) {
-            threads_per_block = tuned_threads;
+        if (mystuff->mode != MODE_NORMAL) {
+            // keep the self-test's variant
+        } else if (tuned_device == current_device && tuned_smem == shared_mem_required &&
+                   tuned_process_size == mystuff->gpu_sieve_processing_size && tuned_exponent == mystuff->exponent &&
+                   tuned_bit_min == mystuff->bit_min) {
+            variant = tuned_variant;
         } else if (numblocks == mystuff->gpu_sieve_size / mystuff->gpu_sieve_processing_size) {
             // Only a full batch is a representative sample; short batches keep the occupancy-based choice.
-            auto launch128 = [&](unsigned int *result) {
-                MFAKTC_FUNC_128<<<numblocks, 128, shared_mem_required>>>(mystuff->exponent, k_base, mystuff->d_bitarray,
-                                                                          mystuff->gpu_sieve_processing_size, shiftcount,
-                                                                          b_preinit, result, mystuff->bit_min - 63);
+            auto launch = [&](int v, unsigned int *result) {
+                return gs_launch_variant(&MFAKTC_GS_VARIANTS[v], numblocks, shared_mem_required, 0, mystuff->exponent, k_base,
+                                         mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, result,
+                                         mystuff->bit_min - 63);
             };
-            auto launch256 = [&](unsigned int *result) {
-                MFAKTC_FUNC_256<<<numblocks, THREADS_PER_BLOCK, shared_mem_required>>>(
-                    mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
-                    result, mystuff->bit_min - 63);
-            };
-            cuda_ret = mfaktc_time_block_variants(launch128, launch256, &tuned_threads);
+            cuda_ret = mfaktc_time_variants(num_variants, launch, &tuned_variant);
             if (cuda_ret != cudaSuccess) {
-                printf("ERROR: TF block-size calibration failed: %s\n", cudaGetErrorString(cuda_ret));
+                printf("ERROR: TF kernel calibration failed: %s\n", cudaGetErrorString(cuda_ret));
                 return RET_CUDA_ERROR;
             }
             tuned_device       = current_device;
@@ -345,23 +349,24 @@ restart_class:
             tuned_process_size = mystuff->gpu_sieve_processing_size;
             tuned_exponent     = mystuff->exponent;
             tuned_bit_min      = mystuff->bit_min;
-            threads_per_block  = tuned_threads;
-            if (mystuff->verbosity >= 2) printf("Timed TF launch selection: %d threads/block\n", threads_per_block);
+            variant            = tuned_variant;
+            if (mystuff->verbosity >= 2)
+                printf("Timed TF launch selection: %d threads/block, %d candidate%s/thread\n", MFAKTC_GS_VARIANTS[variant].threads,
+                       MFAKTC_GS_VARIANTS[variant].cands, MFAKTC_GS_VARIANTS[variant].cands == 1 ? "" : "s");
         }
 #endif
 
         // Now let the GPU trial factor the candidates that survived the sieving
 
         gs_timing_record(&gs_class_timing, GS_EV_TF_START, 0);
-#ifdef MFAKTC_DUAL_BLOCK_KERNELS
-        if (threads_per_block == 128)
-            MFAKTC_FUNC_128<<<numblocks, 128, shared_mem_required>>>(
-                mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
-                mystuff->d_RES, mystuff->bit_min - 63);
-        else
-            MFAKTC_FUNC_256<<<numblocks, THREADS_PER_BLOCK, shared_mem_required>>>(
-                mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit,
-                mystuff->d_RES, mystuff->bit_min - 63);
+#ifdef MFAKTC_GS_VARIANTS
+        cuda_ret = gs_launch_variant(&MFAKTC_GS_VARIANTS[variant], numblocks, shared_mem_required, 0, mystuff->exponent, k_base,
+                                     mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, mystuff->d_RES,
+                                     mystuff->bit_min - 63);
+        if (cuda_ret != cudaSuccess) {
+            printf("ERROR: TF kernel launch failed: %s\n", cudaGetErrorString(cuda_ret));
+            return RET_CUDA_ERROR;
+        }
 #else
         MFAKTC_FUNC<<<numblocks, threads_per_block, shared_mem_required>>>(
             mystuff->exponent, k_base, mystuff->d_bitarray, mystuff->gpu_sieve_processing_size, shiftcount, b_preinit, mystuff->d_RES
@@ -465,8 +470,6 @@ restart_class:
 }
 
 #undef MFAKTC_FUNC
-#ifdef MFAKTC_DUAL_BLOCK_KERNELS
-#undef MFAKTC_DUAL_BLOCK_KERNELS
-#undef MFAKTC_FUNC_128
-#undef MFAKTC_FUNC_256
+#ifdef MFAKTC_GS_VARIANTS
+#undef MFAKTC_GS_VARIANTS
 #endif
