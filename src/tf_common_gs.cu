@@ -18,6 +18,7 @@ along with mfaktc.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "gpusieve.h"
 #include "tf_autotune.cuh"
+#include "gs_timing.cuh"
 
 #undef RAW_GPU_BENCH // FIXME
 
@@ -158,6 +159,13 @@ restart_class:
     cudaMemset(mystuff->d_modbasecase_debug, 0, 32 * sizeof(int));
 #endif
 
+    // At verbosity 3, report how the class's GPU time splits between the sieve and TF kernels
+    cuda_ret = gs_timing_begin_class(&gs_class_timing, mystuff->verbosity >= 3 && mystuff->mode == MODE_NORMAL);
+    if (cuda_ret != cudaSuccess) {
+        printf("ERROR: could not create GPU timing events: %s\n", cudaGetErrorString(cuda_ret));
+        return RET_CUDA_ERROR;
+    }
+
     // Calculate the initial bit-to-clear values for this class
     gpusieve_init_class(mystuff, k_min);
 
@@ -281,7 +289,14 @@ restart_class:
 
         // Do some sieving on the GPU.
 
+        cuda_ret = gs_timing_begin_batch(&gs_class_timing);
+        if (cuda_ret == cudaSuccess) cuda_ret = gs_timing_record(&gs_class_timing, GS_EV_SIEVE_START, 0);
+        if (cuda_ret != cudaSuccess) {
+            printf("ERROR: GPU timing failed: %s\n", cudaGetErrorString(cuda_ret));
+            return RET_CUDA_ERROR;
+        }
         gpusieve(mystuff, k_remaining);
+        gs_timing_record(&gs_class_timing, GS_EV_SIEVE_END, 0);
 
         // Set the k value corresponding to the first bit in the bit array
 
@@ -337,6 +352,7 @@ restart_class:
 
         // Now let the GPU trial factor the candidates that survived the sieving
 
+        gs_timing_record(&gs_class_timing, GS_EV_TF_START, 0);
 #ifdef MFAKTC_DUAL_BLOCK_KERNELS
         if (threads_per_block == 128)
             MFAKTC_FUNC_128<<<numblocks, 128, shared_mem_required>>>(
@@ -360,6 +376,8 @@ restart_class:
 #endif
         );
 #endif
+        gs_timing_record(&gs_class_timing, GS_EV_TF_END, 0);
+        gs_timing_end_batch(&gs_class_timing);
 
         // Count the number of blocks processed
         count += numblocks;
@@ -409,6 +427,15 @@ restart_class:
 
     // GPU sieving does not wait on the CPU (also used by print_status_line to indicate this is a GPU sieving kernel)
     mystuff->stats.cpu_wait = -2.0f;
+
+    cuda_ret = gs_timing_end_class(&gs_class_timing);
+    if (cuda_ret != cudaSuccess) {
+        printf("ERROR: GPU timing failed: %s\n", cudaGetErrorString(cuda_ret));
+        return RET_CUDA_ERROR;
+    }
+    if (gs_class_timing.enabled)
+        printf("GPU time for class %d: sieve %.2f ms, TF %.2f ms (%d batches); class %llu ms\n", mystuff->stats.class_number,
+               gs_class_timing.sieve_ms, gs_class_timing.tf_ms, gs_class_timing.batches, mystuff->stats.class_time);
 
     // Print out a useful status line
     print_status_line(mystuff);

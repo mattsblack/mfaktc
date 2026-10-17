@@ -57,7 +57,8 @@ void print_help(char *string)
     printf("  -st                    run built-in self-test and exit\n");
     printf("  -st2                   same as -st but use extended range for k_min and k_max\n");
     printf("  -v <number>            verbosity level: terse = 0, default = 1, more = 2,\n");
-    printf("                                          maximum = 3\n");
+    printf("                                          maximum = 3 (also prints GPU sieve\n");
+    printf("                                          and TF kernel times per class)\n");
     printf("\n");
     printf("options for debugging purposes\n");
     printf("  --timertest            test timer functions\n");
