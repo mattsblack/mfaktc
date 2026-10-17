@@ -182,6 +182,9 @@ The following lines define the min, default and max value.
                                                   Not validated and shared memory might be an issue! */
 
 #define GPU_SIEVE_SEGMENT_SIZE_DEFAULT      64 /* Kib sieved by each GPU sieve block; 64, 128 or 256 */
+
+#define GPU_SIEVE_AUTOTUNE_DEFAULT           1 /* 0: use the INI sieve/TF settings as-is */
+#define GS_AUTOTUNE_CACHE_FILE       "mfaktc.autotune"
 // clang-format on
 
 #ifdef WAGSTAFF

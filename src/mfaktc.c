@@ -744,11 +744,14 @@ int main(int argc, char **argv)
     mystuff.logging            = -1;
     mystuff.gpu_sieving        = 0;
     mystuff.gpu_sieve_size     = GPU_SIEVE_SIZE_DEFAULT * 1024 * 1024; /* Size (in bits) of the GPU sieve. Default is 128M bits. */
-    mystuff.gpu_sieve_primes   = GPU_SIEVE_PRIMES_DEFAULT; /* Default to sieving primes below about 1.05M */
+    mystuff.gpu_sieve_primes             = GPU_SIEVE_PRIMES_DEFAULT; /* Default to sieving primes below about 1.05M */
+    mystuff.gpu_sieve_primes_configured  = GPU_SIEVE_PRIMES_DEFAULT;
     mystuff.gpu_sieve_processing_size =
         GPU_SIEVE_PROCESS_SIZE_DEFAULT * 1024; /* Default to 16K bits processed by each block in a Barrett kernel. */
     mystuff.gpu_sieve_segment_size = GPU_SIEVE_SEGMENT_SIZE_DEFAULT * 1024;
     mystuff.gpu_sieve_atomic_marks = 0;
+    mystuff.gpu_sieve_autotune     = GPU_SIEVE_AUTOTUNE_DEFAULT;
+    mystuff.gpu_sieve_batch_size   = mystuff.gpu_sieve_size;
     sprintf(mystuff.resultfile, "results.txt");
     sprintf(mystuff.jsonresultfile, "results.json.txt");
     sprintf(mystuff.logfile, "mfaktc.log");

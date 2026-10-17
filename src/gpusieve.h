@@ -23,6 +23,7 @@ void gpusieve_init(mystuff_t *mystuff);
 #if defined(NVCC_EXTERN) || defined(_MSC_VER)
 }
 #endif
+void gpusieve_rebuild_primes(mystuff_t *mystuff);
 void gpusieve_init_exponent(mystuff_t *mystuff);
 void gpusieve_init_class(mystuff_t *mystuff, unsigned long long k_min);
 void gpusieve_advance_class(mystuff_t *mystuff, unsigned int bits_advanced);

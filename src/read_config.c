@@ -302,7 +302,8 @@ int read_config(mystuff_t *mystuff)
         if (mystuff->verbosity >= 1) {
             logprintf(mystuff, "  GPUSievePrimes            %d\n", i);
         }
-        mystuff->gpu_sieve_primes = i;
+        mystuff->gpu_sieve_primes            = i;
+        mystuff->gpu_sieve_primes_configured = i;
 
         /*****************************************************************************/
 
@@ -355,6 +356,7 @@ int read_config(mystuff_t *mystuff)
             logprintf(mystuff, "  GPUSieveProcessSize       %d Kib\n", i);
         }
         mystuff->gpu_sieve_processing_size = i * 1024;
+        mystuff->gpu_sieve_batch_size      = mystuff->gpu_sieve_size;
 
         /*****************************************************************************/
 
@@ -382,6 +384,19 @@ int read_config(mystuff_t *mystuff)
             logprintf(mystuff, "  GPUSieveAtomicMarks       %s\n", i ? "enabled" : "disabled");
         }
         mystuff->gpu_sieve_atomic_marks = i;
+
+        /*****************************************************************************/
+
+        if (my_read_int("mfaktc.ini", "GPUSieveAutotune", &i)) {
+            i = GPU_SIEVE_AUTOTUNE_DEFAULT;
+        } else if (i != 0 && i != 1) {
+            logprintf(mystuff, "Warning: GPUSieveAutotune must be 0 or 1, using default value (%d)\n", GPU_SIEVE_AUTOTUNE_DEFAULT);
+            i = GPU_SIEVE_AUTOTUNE_DEFAULT;
+        }
+        if (mystuff->verbosity >= 1) {
+            logprintf(mystuff, "  GPUSieveAutotune          %s\n", i ? "enabled" : "disabled");
+        }
+        mystuff->gpu_sieve_autotune = i;
     }
 
     /*****************************************************************************/

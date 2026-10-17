@@ -107,10 +107,13 @@ typedef struct {
 
     int gpu_sieving; /* TRUE if we're letting the GPU do the sieving */
     int gpu_sieve_size; /* Size (in bits) of the GPU sieve.  Default is 128M bits. */
+    int gpu_sieve_batch_size; /* Bits sieved and trial-factored per batch; at most gpu_sieve_size */
     int gpu_sieve_primes; /* the actual number of primes using for sieving */
+    int gpu_sieve_primes_configured; /* GPUSievePrimes from the INI, before rounding */
     int gpu_sieve_processing_size; /* The number of GPU sieve bits each thread in a Barrett kernel will process.  Default is 2K bits. */
     int gpu_sieve_segment_size; /* Bits sieved in shared memory by each GPU sieve block: 64K, 128K or 256K */
     int gpu_sieve_atomic_marks; /* TRUE if the GPU sieve marks composites with shared-memory atomics */
+    int gpu_sieve_autotune; /* 1: time sieve+TF configs and cache the winner; 0: use the INI values as-is */
     unsigned int gpu_sieve_min_exp; /* the minimum exponent allowed for GPU sieving */
     unsigned int *d_bitarray; /* 128M bit array for GPU sieve */
     unsigned int *d_sieve_info; /* Device array containing compressed info needed for prime number GPU sieves */

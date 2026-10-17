@@ -1312,11 +1312,6 @@ void tiny_soe(uint32 limit, uint32 *primes)
 
 extern "C" __host__ void gpusieve_init(mystuff_t *mystuff)
 {
-    uint32 *primes;
-    uint8 *pinfo, *saveptr;
-    uint32 *rowinfo, *row;
-    uint32 i, j, pinfo_size, rowinfo_size;
-    uint32 k, loop_count, loop_end;
     static int gpusieve_initialized = 0;
 
     // If we've already allocated GPU memory, return
@@ -1343,6 +1338,31 @@ extern "C" __host__ void gpusieve_init(mystuff_t *mystuff)
     // to isolate a bug by eliminating the GPU sieving code as a possible cause.
     checkCudaErrors(cudaMemset(mystuff->d_bitarray, 0xFF, mystuff->gpu_sieve_size / 8));
 #endif
+
+    gpusieve_rebuild_primes(mystuff);
+}
+
+static uint32 last_exponent_initialized = 0;
+
+// Build (or rebuild) the compressed prime tables for mystuff->gpu_sieve_primes.
+// The bit array is left as-is; the exponent and class must be re-inited afterwards.
+void gpusieve_rebuild_primes(mystuff_t *mystuff)
+{
+    uint32 *primes;
+    uint8 *pinfo, *saveptr;
+    uint32 *rowinfo, *row;
+    uint32 i, j, pinfo_size, rowinfo_size;
+    uint32 k, loop_count, loop_end;
+
+    if (mystuff->d_sieve_info != NULL) {
+        cudaFree(mystuff->d_sieve_info);
+        mystuff->d_sieve_info = NULL;
+    }
+    if (mystuff->d_calc_bit_to_clear_info != NULL) {
+        cudaFree(mystuff->d_calc_bit_to_clear_info);
+        mystuff->d_calc_bit_to_clear_info = NULL;
+    }
+    last_exponent_initialized = 0;
 
 #undef pinfo32
 #define pinfo32 ((uint32 *)pinfo)
@@ -1657,7 +1677,6 @@ extern "C" __host__ void gpusieve_init(mystuff_t *mystuff)
 
 void gpusieve_init_exponent(mystuff_t *mystuff)
 {
-    static uint32 last_exponent_initialized = 0;
 
 #ifdef RAW_GPU_BENCH
     // Quick hack (leave bit array set to all ones) to eliminate sieve time from GPU-code benchmarks.

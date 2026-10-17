@@ -16,6 +16,7 @@ mfaktc
 # device-specific mfaktc files
 *.ckp
 *.log
+mfaktc.autotune
 results.txt
 results.json.txt
 results_sent.txt
