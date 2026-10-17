@@ -69,6 +69,32 @@ static void gs_fill_tf_node(cudaKernelNodeParams *p, const gs_variant_t *variant
     p->kernelParams   = args;
 }
 
+/* After a failed or invalidated stream capture, CUDA requires synchronizing the
+   affected streams before new work can be enqueued (otherwise launches return
+   cudaErrorStreamCaptureInvalidated). */
+static void gs_stream_capture_recover(cudaStream_t sieve_stream, cudaStream_t tf_stream)
+{
+    cudaGraph_t dangling = NULL;
+    cudaStreamCaptureStatus status;
+    cudaStream_t streams[2];
+    int nstreams = 0;
+
+    streams[nstreams++] = sieve_stream;
+    if (tf_stream != sieve_stream) streams[nstreams++] = tf_stream;
+
+    for (int i = 0; i < nstreams; i++) {
+        cudaStream_t s = streams[i];
+        if (!s) continue;
+        if (cudaStreamIsCapturing(s, &status) != cudaSuccess || status == cudaStreamCaptureStatusNone) continue;
+        dangling = NULL;
+        (void)cudaStreamEndCapture(s, &dangling);
+        if (dangling) cudaGraphDestroy(dangling);
+        (void)cudaStreamSynchronize(s);
+    }
+    (void)cudaDeviceSynchronize();
+    cudaGetLastError();
+}
+
 static cudaError_t gs_graph_find_kernels(cudaGraph_t graph, cudaGraphNode_t *sieve_node, cudaGraphNode_t *tf_node)
 {
     size_t n = 0;

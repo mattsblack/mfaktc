@@ -285,6 +285,7 @@ restart_class:
     static cudaGraphNode_t gs_graph_sieve_node, gs_graph_tf_node;
     static int gs_graph_nblocks = -1, gs_graph_smem = -1, gs_graph_pipeline = -1;
     static gs_kernel_t gs_graph_kernel = NULL;
+    static int gs_graph_disabled = 0;
     int need_search = 0, current_device = -1;
 
     auto configure_smem_for = [&](int v) -> cudaError_t {
@@ -685,8 +686,8 @@ restart_class:
         {
             const int full_batch = numblocks == mystuff->gpu_sieve_batch_size / mystuff->gpu_sieve_processing_size;
             if (full_batch) full_batches++;
-            if (mystuff->gpu_sieve_graphs && mystuff->mode == MODE_NORMAL && !gs_class_timing.enabled && full_batch &&
-                full_batches >= 2) {
+            if (mystuff->gpu_sieve_graphs && !gs_graph_disabled && mystuff->mode == MODE_NORMAL && !gs_class_timing.enabled &&
+                full_batch && full_batches >= 2) {
                 unsigned int exp_arg = mystuff->exponent, bits_arg = (unsigned int)mystuff->gpu_sieve_processing_size;
                 int bit_max64 = mystuff->bit_min - 63, shift_arg = shiftcount;
                 unsigned int *bit_array = mystuff->d_bitarray[buf], *res_arg = mystuff->d_RES;
@@ -695,21 +696,34 @@ restart_class:
                 void *tf_args[]         = { &exp_arg, &k_arg, &bit_array, &bits_arg, &shift_arg, &b_arg, &res_arg, &bit_max64 };
                 const gs_variant_t *gv  = &MFAKTC_GS_VARIANTS[variant];
                 size_t smem             = gs_variant_shared_mem(gv, shared_mem_required);
-                cudaError_t graph_err   = cudaSuccess;
+                cudaError_t graph_err = cudaSuccess;
 
-                if (gs_batch_graph && (gs_graph_nblocks != numblocks || gs_graph_smem != (int)smem || gs_graph_kernel != gv->kernel ||
+                graph_err = configure_smem_for(variant);
+                if (graph_err != cudaSuccess) gs_stream_capture_recover(sieve_stream, tf_stream);
+
+                if (graph_err == cudaSuccess && gs_batch_graph &&
+                    (gs_graph_nblocks != numblocks || gs_graph_smem != (int)smem || gs_graph_kernel != gv->kernel ||
                                        gs_graph_pipeline != pipeline)) {
                     cudaGraphExecDestroy(gs_batch_graph);
                     gs_batch_graph = NULL;
                 }
-                if (gs_batch_graph == NULL) {
+                if (graph_err == cudaSuccess && gs_batch_graph == NULL) {
                     cudaGraph_t graph = NULL;
                     int capturing     = 0;
-                    graph_err         = cudaStreamBeginCapture(sieve_stream, cudaStreamCaptureModeGlobal);
+
+                    if (pipeline) {
+                        graph_err = cudaStreamSynchronize(sieve_stream);
+                        if (graph_err == cudaSuccess) graph_err = cudaStreamSynchronize(tf_stream);
+                    }
+                    if (graph_err == cudaSuccess)
+                        graph_err = cudaStreamBeginCapture(sieve_stream, cudaStreamCaptureModeGlobal);
                     if (graph_err == cudaSuccess) capturing = 1;
                     if (graph_err == cudaSuccess && pipeline)
                         graph_err = cudaStreamWaitEvent(sieve_stream, mystuff->gs_tf_done[buf], 0);
-                    if (graph_err == cudaSuccess) gpusieve_launch(mystuff, k_remaining, sieve_stream, bit_array);
+                    if (graph_err == cudaSuccess) {
+                        gpusieve_launch(mystuff, k_remaining, sieve_stream, bit_array);
+                        graph_err = cudaGetLastError();
+                    }
                     if (graph_err == cudaSuccess && pipeline)
                         graph_err = cudaEventRecord(mystuff->gs_sieve_done[buf], sieve_stream);
                     if (graph_err == cudaSuccess && pipeline)
@@ -735,7 +749,7 @@ restart_class:
                         cudaGraphExecDestroy(gs_batch_graph);
                         gs_batch_graph = NULL;
                     }
-                } else {
+                } else if (graph_err == cudaSuccess && gs_batch_graph != NULL) {
                     cudaKernelNodeParams sp, tp;
                     gpusieve_graph_sieve_params(mystuff, (int)k_remaining, bit_array, &sp);
                     gs_fill_tf_node(&tp, gv, numblocks, smem, tf_args);
@@ -747,8 +761,16 @@ restart_class:
                     graph_err = cudaGraphLaunch(gs_batch_graph, sieve_stream);
                 if (graph_err == cudaSuccess && gs_batch_graph)
                     launched_graph = 1;
-                else if (mystuff->verbosity >= 2)
-                    printf("WARNING: CUDA graph replay skipped (%s); using ordinary launches\n", cudaGetErrorString(graph_err));
+                else if (graph_err != cudaSuccess) {
+                    gs_stream_capture_recover(sieve_stream, tf_stream);
+                    if (gs_batch_graph) {
+                        cudaGraphExecDestroy(gs_batch_graph);
+                        gs_batch_graph = NULL;
+                    }
+                    gs_graph_disabled = 1;
+                    if (mystuff->verbosity >= 1)
+                        printf("WARNING: CUDA graph replay disabled (%s); using ordinary launches\n", cudaGetErrorString(graph_err));
+                }
             }
         }
 #endif
@@ -770,6 +792,11 @@ restart_class:
             return RET_CUDA_ERROR;
         }
         gpusieve_launch(mystuff, k_remaining, sieve_stream, mystuff->d_bitarray[buf]);
+        cuda_ret = cudaGetLastError();
+        if (cuda_ret != cudaSuccess) {
+            printf("ERROR: GPU sieve launch failed: %s\n", cudaGetErrorString(cuda_ret));
+            return RET_CUDA_ERROR;
+        }
         gs_timing_record(&gs_class_timing, GS_EV_SIEVE_END, sieve_stream);
         if (pipeline) {
             cuda_ret = cudaEventRecord(mystuff->gs_sieve_done[buf], sieve_stream);
@@ -824,6 +851,11 @@ restart_class:
         }
         gs_timing_record(&gs_class_timing, GS_EV_TF_START, tf_stream);
 #ifdef MFAKTC_GS_VARIANTS
+        cuda_ret = configure_smem_for(variant);
+        if (cuda_ret != cudaSuccess) {
+            printf("ERROR: could not configure TF shared memory: %s\n", cudaGetErrorString(cuda_ret));
+            return RET_CUDA_ERROR;
+        }
         cuda_ret = gs_launch_variant(&MFAKTC_GS_VARIANTS[variant], numblocks,
                                      gs_variant_shared_mem(&MFAKTC_GS_VARIANTS[variant], shared_mem_required), tf_stream,
                                      mystuff->exponent, k_base, mystuff->d_bitarray[buf], mystuff->gpu_sieve_processing_size,
